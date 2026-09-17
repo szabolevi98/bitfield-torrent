@@ -60,6 +60,8 @@ public sealed class PeerSession
     private readonly PiecePicker _picker;
     private readonly IPieceReceiver _receiver;
     private readonly IBlockSource? _blocks;
+    private readonly RateLimiter? _downloadLimit;
+    private readonly RateLimiter? _uploadLimit;
     private readonly PeerState _state;
 
     private readonly HashSet<int> _requested = [];
@@ -77,9 +79,13 @@ public sealed class PeerSession
         PiecePicker picker,
         IPieceReceiver receiver,
         IBlockSource? blocks = null,
-        int port = 6881)
+        int port = 6881,
+        RateLimiter? downloadLimit = null,
+        RateLimiter? uploadLimit = null)
     {
         Port = port;
+        _downloadLimit = downloadLimit;
+        _uploadLimit = uploadLimit;
         _connection = connection;
         _torrent = torrent;
         _picker = picker;
@@ -332,6 +338,12 @@ public sealed class PeerSession
         byte[] block = new byte[request.Length];
         await _blocks.ReadBlockAsync(request, block, cancellationToken).ConfigureAwait(false);
 
+        // The upload limit is applied here, where the bytes are about to leave.
+        if (_uploadLimit != null)
+        {
+            await _uploadLimit.WaitAsync(block.Length, cancellationToken).ConfigureAwait(false);
+        }
+
         await _connection.SendAsync(PeerMessage.Piece(request.Piece, request.Begin, block), cancellationToken)
             .ConfigureAwait(false);
 
@@ -416,6 +428,16 @@ public sealed class PeerSession
             if (_piece.HasBlock(block) || !_requested.Add(block))
             {
                 continue;
+            }
+
+            // A download cannot be un-received, so the limit is applied to what
+            // is asked for rather than to what arrives: hold the request back
+            // and the bytes never come. It is an approximation — a block
+            // already requested still turns up — but it settles at the right
+            // rate within a second or so.
+            if (_downloadLimit is { IsLimited: true })
+            {
+                await _downloadLimit.WaitAsync(_piece.BlockAt(block).Length, cancellationToken).ConfigureAwait(false);
             }
 
             await _connection.SendAsync(PeerMessage.Request(_piece.BlockAt(block)), cancellationToken)

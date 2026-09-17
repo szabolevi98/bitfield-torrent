@@ -114,6 +114,15 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     /// </summary>
     public DhtNode? Dht { get; init; }
 
+    /// <summary>
+    /// Bytes a second this torrent may take and give, or zero for no limit. A
+    /// client that saturates a line is a client its user turns off, and on a
+    /// tracker that keeps ratios the upload limit is the one that matters.
+    /// </summary>
+    public RateLimiter DownloadLimit { get; } = new();
+
+    public RateLimiter UploadLimit { get; } = new();
+
     /// <summary>How often to ask the DHT again for more peers.</summary>
     public TimeSpan DhtInterval { get; init; } = TimeSpan.FromMinutes(10);
 
@@ -370,7 +379,7 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
                 .ConnectAsync(peer, _torrent.InfoHash, _peerId, connecting.Token)
                 .ConfigureAwait(false);
 
-            PeerSession session = new(connection, _torrent, _picker, this, this);
+            PeerSession session = new(connection, _torrent, _picker, this, this, Port, DownloadLimit, UploadLimit);
             _sessions[peer] = session;
             Interlocked.Decrement(ref _connecting);
             connected = true;
@@ -411,7 +420,7 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
 
         try
         {
-            PeerSession session = new(connection, _torrent, _picker, this, this);
+            PeerSession session = new(connection, _torrent, _picker, this, this, Port, DownloadLimit, UploadLimit);
             _sessions[peer] = session;
 
             await session.RunAsync(cancellationToken).ConfigureAwait(false);

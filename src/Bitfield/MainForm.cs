@@ -24,6 +24,8 @@ internal sealed class MainForm : Form
     private readonly Label _title = new();
     private readonly System.Windows.Forms.Timer _tick = new() { Interval = 500 };
 
+    private readonly TextBox _downLimit = new();
+    private readonly TextBox _upLimit = new();
     private readonly PeerId _peerId = PeerId.Generate();
     private readonly List<string> _notes = [];
 
@@ -31,6 +33,7 @@ internal sealed class MainForm : Form
     private DhtNode? _dht;
     private PeerListener? _listener;
     private CancellationTokenSource? _background;
+    private PortMapping.Mapping? _mapping;
 
     private long _lastDownloaded;
     private long _lastUploaded;
@@ -116,6 +119,8 @@ internal sealed class MainForm : Form
         header.Controls.Add(_title);
         header.Controls.Add(Button("Open torrent…", 12, OpenTorrent));
         header.Controls.Add(Button("Magnet link…", 132, OpenMagnet));
+        header.Controls.Add(Limit(_downLimit, "down KB/s", 0));
+        header.Controls.Add(Limit(_upLimit, "up KB/s", 150));
 
         return header;
     }
@@ -134,6 +139,60 @@ internal sealed class MainForm : Form
         host.Controls.Add(_log);
         return host;
     }
+
+    /// <summary>
+    /// A rate limit box. Zero means no limit, which is what both start at —
+    /// throttling a client by default would be a surprise, and the number is
+    /// there for the times a download is in the way of something else.
+    /// </summary>
+    private Control Limit(TextBox box, string caption, int offsetFromRight)
+    {
+        Panel panel = new()
+        {
+            Size = new Size(96, 42),
+            BackColor = Theme.Background,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+        };
+
+        panel.Location = new Point(ClientSize.Width - 210 + offsetFromRight, 6);
+
+        Label label = new()
+        {
+            Text = caption,
+            ForeColor = Theme.TextMuted,
+            Font = Theme.CaptionFont,
+            AutoSize = true,
+            Location = new Point(2, 0),
+        };
+
+        box.Text = "0";
+        box.Location = new Point(0, 15);
+        box.Width = 88;
+        box.BackColor = Theme.Surface;
+        box.ForeColor = Theme.TextPrimary;
+        box.BorderStyle = BorderStyle.FixedSingle;
+        box.Font = Theme.UiFont;
+        box.TextChanged += (_, _) => ApplyLimits();
+
+        panel.Controls.Add(label);
+        panel.Controls.Add(box);
+        return panel;
+    }
+
+    private void ApplyLimits()
+    {
+        TorrentDownload? download = _session?.Download;
+        if (download == null)
+        {
+            return;
+        }
+
+        download.DownloadLimit.BytesPerSecond = Kilobytes(_downLimit.Text);
+        download.UploadLimit.BytesPerSecond = Kilobytes(_upLimit.Text);
+    }
+
+    private static long Kilobytes(string text) =>
+        long.TryParse(text.Trim(), out long value) && value > 0 ? value * 1024 : 0;
 
     private Button Button(string text, int x, Action onClick)
     {
@@ -173,6 +232,20 @@ internal sealed class MainForm : Form
         _ = Task.Run(() => _listener.RunAsync(_background.Token), CancellationToken.None);
 
         Note($"listening on {_listener.Port}, DHT on {_dht.Port}");
+
+        // Without a forwarded port this client can reach out but not be
+        // reached, and in a well seeded swarm the peers with anything to gain
+        // are the ones dialling out.
+        _ = Task.Run(async () =>
+        {
+            PortMapping.Mapping? mapping = await PortMapping
+                .AddAsync(6881, "Bitfield Torrent", _background.Token).ConfigureAwait(false);
+
+            _mapping = mapping;
+            Note(mapping != null
+                ? $"the router {mapping}"
+                : "no router would forward port 6881; peers can still be dialled out to");
+        }, CancellationToken.None);
 
         _ = Task.Run(async () =>
         {
@@ -301,6 +374,7 @@ internal sealed class MainForm : Form
                     torrent, directory, _peerId, _dht, Note, null, _background!.Token).ConfigureAwait(false);
 
                 _session = session;
+                BeginInvoke(ApplyLimits);
 
                 BeginInvoke(() =>
                 {
@@ -451,6 +525,20 @@ internal sealed class MainForm : Form
         catch (IOException)
         {
             // Not worth holding up a window that is closing.
+        }
+
+        if (_mapping is { } mapping)
+        {
+            // Router mapping tables are small, and a client that leaves one
+            // behind per run eventually fills one.
+            try
+            {
+                PortMapping.RemoveAsync(mapping).Wait(TimeSpan.FromSeconds(3));
+            }
+            catch (Exception)
+            {
+                // A router that will not take it back is not worth waiting on.
+            }
         }
 
         _background?.Cancel();

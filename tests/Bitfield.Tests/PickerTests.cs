@@ -18,6 +18,57 @@ internal static class PickerTests
         Reservations(check);
         Rarity(check);
         Endgame(check);
+        Limits(check);
+    }
+
+    /// <summary>
+    /// The token bucket behind the rate limits. Checked against a clock, so the
+    /// tolerances are loose enough that a busy machine does not fail a build.
+    /// </summary>
+    private static void Limits(Action<string, bool, string> check)
+    {
+        RateLimiter unlimited = new();
+        check("limiter: no limit is no limit", !unlimited.IsLimited, "");
+
+        System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < 200; i++)
+        {
+            unlimited.WaitAsync(16 * 1024).GetAwaiter().GetResult();
+        }
+
+        check("limiter: and costs nothing when there is none",
+            clock.ElapsedMilliseconds < 200, $"{clock.ElapsedMilliseconds} ms");
+
+        // A bucket holds a second's worth, so the first second's traffic goes
+        // at once and the rest waits.
+        RateLimiter limited = new(100_000);
+        check("limiter: a limit is reported", limited is { IsLimited: true, BytesPerSecond: 100_000 }, "");
+
+        clock.Restart();
+        for (int i = 0; i < 10; i++)
+        {
+            limited.WaitAsync(10_000).GetAwaiter().GetResult();
+        }
+
+        long burst = clock.ElapsedMilliseconds;
+        check("limiter: the first second's worth passes straight through",
+            burst < 300, $"{burst} ms for 100 KB at 100 KB/s");
+
+        clock.Restart();
+        for (int i = 0; i < 10; i++)
+        {
+            limited.WaitAsync(10_000).GetAwaiter().GetResult();
+        }
+
+        long second = clock.ElapsedMilliseconds;
+        check("limiter: and the next second's worth takes about a second",
+            second is > 700 and < 2_000, $"{second} ms for another 100 KB");
+
+        limited.BytesPerSecond = 0;
+        clock.Restart();
+        limited.WaitAsync(10_000_000).GetAwaiter().GetResult();
+        check("limiter: lifting the limit lets everything through",
+            clock.ElapsedMilliseconds < 100, $"{clock.ElapsedMilliseconds} ms");
     }
 
     private static void Reservations(Action<string, bool, string> check)

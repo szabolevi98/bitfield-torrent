@@ -70,11 +70,20 @@ internal static class LiveSeedRunner
 
         using CancellationTokenSource stop = new(TimeSpan.FromSeconds(seconds));
 
+        PortMapping.Mapping? mapping = null;
+
         if (listen)
         {
             listener = new PeerListener(6881, infoHash => infoHash == seed.InfoHash ? seed : null);
             listening = listener.RunAsync(stop.Token);
             Console.WriteLine($"listening on {listener.Port}");
+
+            mapping = await PortMapping.AddAsync(listener.Port, "Bitfield Torrent (seeding)", stop.Token)
+                .ConfigureAwait(false);
+
+            Console.WriteLine(mapping != null
+                ? $"router    {mapping}"
+                : "router    would not forward the port; only outgoing connections then");
         }
         else
         {
@@ -118,6 +127,13 @@ internal static class LiveSeedRunner
         {
             await listener.DisposeAsync().ConfigureAwait(false);
             await Quietly(listening).ConfigureAwait(false);
+        }
+
+        if (mapping != null)
+        {
+            await PortMapping.RemoveAsync(mapping).ConfigureAwait(false);
+            Console.WriteLine();
+            Console.WriteLine("router    the port mapping was taken back");
         }
 
         Console.WriteLine();

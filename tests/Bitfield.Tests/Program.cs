@@ -16,6 +16,7 @@ if (args.Length > 0)
         "seed" => LiveSeedRunner.Run(args),
         "magnet" => LiveMagnetRunner.Run(args),
         "dht" => LiveDhtRunner.Run(args),
+        "upnp" => LiveUpnpRunner.Run(args),
         _ => LiveTrackerRunner.Run(args),
     };
 }

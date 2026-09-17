@@ -17,7 +17,7 @@ torrent rather than in order, with the darker cells the ones in flight.
 
 ## Status
 
-Milestone 9 of 9, most of the way. **It works and it has a window.** A torrent is read —
+Milestone 9 of 9. **It works, and it has a window.** A torrent is read —
 from a file, or from nothing but its hash by asking the swarm for its
 description — its trackers answer over HTTP or UDP, the DHT finds peers with no
 tracker at all, a few dozen peers are kept busy at once, pieces are picked
@@ -27,10 +27,10 @@ connect are answered, blocks are served from disk, and the choking algorithm
 decides which few are worth answering.
 
 The window shows the piece map, the peers and the last two minutes of
-throughput, and opens a torrent or a magnet link. Still missing from this last
-milestone: rate limits and the UPnP port mapping.
+throughput, opens a torrent or a magnet link, holds either direction to a rate
+limit, and asks the router to forward its port.
 
-**399 offline checks pass**, covering the bencode reader and writer, the
+**405 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
 tracker reply arrives in, the peer handshake and every wire message, the piece
 picker, the DHT's distance arithmetic, routing table and messages, and writing
@@ -63,7 +63,8 @@ Against the live swarm, on 2026-09-17:
 | The description from a magnet link, over an HTTP tracker | 60,578 bytes from an rqbit 8.1.1 peer, 562 ms, infohash verified |
 | **The Debian ISO's peers from the real DHT, no tracker at all** | **joined in 41 s, then 100 peers in 12.3 s** |
 | The same with last run's routing table restored | bootstrap routers skipped entirely, 100 peers in 8.3 s |
-| Seeding that ISO to the public swarm for ten minutes | **nothing uploaded — see below** |
+| **Seeding that ISO with the port forwarded** | **4.08 MB taken by a real peer in four minutes — see below** |
+| Asking the router to forward port 6881 over UPnP | mapped in 3.1 s, and taken back afterwards |
 
 ```
 dotnet run --project tests/Bitfield.Tests -- announce [path to a .torrent]
@@ -128,7 +129,7 @@ say so rather than to look reassuring:
 | **6** | **Seeding and choking** | **Done — the local swarm test passes** |
 | **7** | **UDP trackers, magnet, `ut_metadata`** | **Done — a magnet link downloads from scratch** |
 | **8** | **DHT** | **Done — peers found with no tracker involved** |
-| 9 | The window: piece map, peers, graphs, rate limits, UPnP | — |
+| **9** | **The window: piece map, peers, graphs, rate limits, UPnP** | **Done** |
 
 ## Building
 
@@ -180,25 +181,20 @@ The name in the link is treated as what it is: in the swarm test the link says
 one thing and the fetched description says another, and it is the description
 that wins.
 
-### Uploading to strangers is not demonstrated yet
+### The missing port, and what happened when it was opened
 
 Seeding the finished Debian ISO to the public swarm for ten minutes uploaded
-nothing at all. Instrumenting the connections says why rather than leaving it
-to be guessed at: of the peers connected, every one that got as far as sending
-its bitfield held the whole torrent already — nine out of nine on the last run.
+nothing at all, and counting what the peers were said why: every one that got
+as far as sending its bitfield held the whole torrent already — nine of nine on
+that run. A heavily seeded torrent has few leechers, those leechers dial out to
+seeds rather than waiting to be dialled, and this client was not listening
+anywhere they could reach.
 
-A heavily seeded torrent has few leechers, and the leechers it does have dial
-out to seeds rather than waiting to be dialled. This client is not listening on
-a port anything can reach, so those leechers cannot arrive, and the peers it
-reaches out to itself are seeds with nothing to want. What the ten minutes
-measured is the shape of that swarm and the absence of an open port, not the
-code that serves blocks.
-
-That code is exercised, just not by strangers: the loopback swarm has this
-client serving a full torrent to a peer that started with nothing, with no
-original seed present. Settling it properly needs a reachable port — the UPnP
-mapping is milestone 9 — or a run against an established client on the same
-machine. Neither has been done, so nothing here claims it.
+With the UPnP mapping in, that prediction could be tested rather than argued.
+The same ISO, the same four-minute window, the port forwarded and a listener
+behind it: one peer that was not a seed arrived, was unchoked, and took
+**4,276,224 bytes**. The diagnosis was right, and serving blocks to strangers
+is no longer something this README only claims.
 
 ### Why the swarm test removes the seed
 
