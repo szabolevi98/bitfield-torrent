@@ -11,149 +11,79 @@ download proceeds.
 
 ![Bitfield Torrent downloading a Debian ISO](docs/screenshot.png)
 
-Two torrents: one downloading the Debian netinst ISO at 15.6 MB/s across 29
-peers, one paused. The speckle in the piece map is what rarest first looks
-like — pieces arriving from all over the torrent rather than in order, with the
-darker cells the ones in flight.
+Three torrents — one downloading the Debian netinst ISO at 12 MB/s across 27
+peers, one stalled, one paused. The speckle in the piece map is what rarest
+first looks like: pieces arriving from all over the torrent rather than in
+order.
 
-## Status
+## What it does
 
-Milestone 13 of 13. **A torrent client.** A torrent is read —
-from a file, or from nothing but its hash by asking the swarm for its
-description — its trackers answer over HTTP or UDP, the DHT finds peers with no
-tracker at all, a few dozen peers are kept busy at once, pieces are picked
-rarest first, and every piece that verifies is written across the files it
-straddles. An interrupted download picks up where it left off. Peers that
-connect are answered, blocks are served from disk, and the choking algorithm
-decides which few are worth answering.
+- **Torrents from files or magnet links.** A magnet link is an infohash and some
+  hints; the description is fetched from the swarm and has to hash to the
+  infohash before a byte of it is believed.
+- **Trackers over HTTP and UDP**, in tiers, with `started`, `stopped` and
+  `completed` announced when they are actually true.
+- **A DHT** — Kademlia routing table, `get_peers` and `announce_peer` — so a
+  torrent with no tracker still finds peers. Torrents carrying `private: 1` keep
+  it off, along with peer exchange and local discovery. That flag is not
+  advisory.
+- **Dozens of peers at once**, pieces picked rarest first with endgame
+  duplication, requests pipelined per peer and adapted to what each one keeps up
+  with.
+- **Uploading**, with tit-for-tat choking and a rotating optimistic unchoke,
+  behind a listening port the router is asked to forward over UPnP.
+- **Several torrents**, listed with progress and status, sortable by any column,
+  added and removed with or without their content, and back where they were when
+  the client starts again — seeding included.
+- **Pause and resume without hashing a byte**, and **file priorities** including
+  *do not download*: a torrent is finished when every piece it still wants is
+  held, not when every piece is.
+- **Storage that respects file boundaries** — pieces written across the files
+  they straddle, sparse preallocation, and nothing written until its SHA-1
+  matches.
+- **A window that is not the client.** It lives in the notification area, so
+  closing it stops nothing; a second launch hands its torrent to the copy
+  already running rather than starting a rival for the same port and the same
+  files.
 
-The window lists every torrent with its progress and status, shows the selected
-one in detail — piece map, peers, the last two minutes of throughput — adds
-torrents from files or magnet links, removes them with or without their
-content, holds every torrent together to a rate limit, and asks the router to
-forward its port. Torrents come back when the client is started again, seeding
-included.
+## Measured, not claimed
 
-Pausing stops a torrent without forgetting it — the connections go, the tracker
-is told, and what has been downloaded stays where it is. Resuming picks it up
-again **without hashing a single byte**, and a torrent paused when the client
-closed comes back paused.
+Nothing here is claimed as working without a measurement beside it.
 
-Files can be set aside or asked for sooner. A file marked *do not download* has
-its pieces skipped, and the torrent is finished when every piece it still wants
-is held — not when every piece is.
+**454 offline checks pass** on every build: bencode both ways, the metainfo
+model, the announce request down to its exact bytes, every shape a tracker reply
+arrives in, the handshake and every wire message, the piece picker, the DHT's
+distance arithmetic, routing table and messages, and pieces written across file
+boundaries. Three real torrent files have their infohashes, piece counts and
+lengths matched against values derived with a separate implementation.
 
-It lives in the notification area, so the window can be closed without stopping
-anything, and says when a torrent finishes. A second launch hands its torrent to
-the client already running rather than starting a rival that would fight over
-the same port and the same files. What is worth changing is changeable:
-default folder, port, UPnP, the DHT, rate limits, the peer budget, tray
-behaviour and starting with Windows.
-
-**454 offline checks pass**, covering the bencode reader and writer, the
-metainfo model, the announce request down to its exact bytes, every shape a
-tracker reply arrives in, the peer handshake and every wire message, the piece
-picker, the DHT's distance arithmetic, routing table and messages, and writing
-pieces across file boundaries — plus three real torrent files whose infohashes,
-piece counts and lengths are matched against values derived with a separate
-implementation.
-
-Among them are eight DHT nodes on loopback, where one announces a torrent and
-another that has never heard of it looks the torrent up and is told where to
-find it — and a swarm of this client talking to itself over loopback: a seed
-and two leechers, and then **a third leecher that finishes with the seed
+Two of those checks are whole networks on loopback. Eight DHT nodes, where one
+announces a torrent and another that has never heard of it looks the torrent up
+and is told where to find it. And a swarm of this client talking to itself: a
+seed and two leechers, and then a third leecher that finishes **with the seed
 removed from the swarm entirely**, served only by the two peers that had just
 downloaded it themselves. That needs the uploading side, the choking algorithm
-and incoming connections all to be right at once. It takes about a second and
-runs on every build.
+and incoming connections all to be right at once. It takes about a second.
 
 Against the live swarm, on 2026-09-17:
 
 | What | Result |
 |---|---|
-| **The Debian 13.7 netinst ISO, start to finish** | **792,723,456 bytes in 49.1 s — 15.39 MB/s average, 28 peers, no piece failed its hash** |
+| **The Debian 13.7 netinst ISO, start to finish** | **792,723,456 bytes in 49.1 s — 15.39 MB/s, 28 peers, no piece failed its hash** |
 | **Its SHA-256 against Debian's published `SHA256SUMS`** | **`a7ef94ac…e355` — matches** |
-| Resuming after 12 pieces were damaged | hashing found exactly those 12 in 2.6 s, re-fetched 3,145,728 bytes — 12 pieces to the byte — and the checksum matched again |
-| `bttracker.debian.org` (HTTP) | answered in 190 ms with 50 peers |
-| `torrent.ubuntu.com` (HTTPS) | answered in 348 ms, 1,608 seeders reported |
-| Piece 0 from a qBittorrent 5.1.0 peer / an rqbit 8.1.1 peer | SHA-1 verified in 1,122 ms / 351 ms |
-| The same ISO over HTTP from Debian's mirror, one stream, for comparison | 18.32 MB/s |
-| **The same ISO from a magnet link — hash only, UDP tracker** | **description fetched from a stranger in 726 ms, then 792,723,456 bytes in 69.8 s, SHA-256 matching** |
-| `tracker.opentrackr.org` (UDP) | 32 peers |
-| The description from a magnet link, over an HTTP tracker | 60,578 bytes from an rqbit 8.1.1 peer, 562 ms, infohash verified |
-| **The Debian ISO's peers from the real DHT, no tracker at all** | **joined in 41 s, then 100 peers in 12.3 s** |
-| The same with last run's routing table restored | bootstrap routers skipped entirely, 100 peers in 8.3 s |
-| **Seeding that ISO with the port forwarded** | **4.08 MB taken by a real peer in four minutes — see below** |
-| Asking the router to forward port 6881 over UPnP | mapped in 3.1 s, and taken back afterwards |
+| **The same ISO from a magnet link — the hash and nothing else** | **description fetched from a stranger in 726 ms, then all 792,723,456 bytes, SHA-256 matching again** |
+| **The same ISO's peers from the real DHT, no tracker at all** | **joined in 41 s, then 100 peers in 12.3 s** |
+| **Seeding it with the port forwarded** | **4,276,224 bytes taken by a real peer in four minutes** |
+| Resuming after 12 pieces were damaged | hashing found exactly those 12 in 2.6 s and re-fetched 12 pieces to the byte, checksum matching |
+| The same ISO over HTTP from Debian's mirror, one stream | 18.32 MB/s — this client reaches about 85% of it |
+
+The live runs are not part of the build, because they depend on somebody else's
+swarm being up:
 
 ```
 dotnet run --project tests/Bitfield.Tests -- announce [path to a .torrent]
-dotnet run --project tests/Bitfield.Tests -- piece    [path to a .torrent]
 dotnet run --project tests/Bitfield.Tests -- download <directory> [.torrent] [expected sha-256]
 ```
-
-Nothing below is claimed as working until it has a measurement beside it.
-
-## Scope
-
-- **Metainfo and bencode** — `.torrent` parsing with the raw `info` bytes kept
-  intact, because the infohash is the SHA-1 of those bytes exactly as they
-  arrived, not of a re-encoding of them
-- **Trackers** — HTTP announce, then UDP (BEP 15) with its connection handshake
-- **Peer wire protocol** — handshake, `bitfield`/`have`, `choke`/`interested`,
-  block requests in 16 KiB pieces, pipelined per peer
-- **Piece selection** — random first while there is nothing to trade, rarest
-  first in the middle, endgame duplication for the last few blocks
-- **Choking** — tit-for-tat with four unchoke slots and a rotating optimistic
-  unchoke, which is what makes the swarm work at all
-- **Storage** — pieces mapped across file boundaries, sparse preallocation,
-  hash verification before anything is written, resume after a restart
-- **Magnet links** — the extension protocol (BEP 10) and `ut_metadata` (BEP 9),
-  so a download can start from an infohash alone
-- **DHT** — Kademlia routing table, `get_peers` and `announce_peer`, bootstrapped
-  once and persisted afterwards
-
-### Private torrents
-
-Torrents carrying `private: 1` in the info dictionary are tracker-only by
-design. The DHT, peer exchange and local peer discovery are all implemented, and
-all three stay switched off for those torrents — that flag is not advisory.
-
-## How it will be measured
-
-The point of a client is that the bytes are right, so the checks are arranged to
-say so rather than to look reassuring:
-
-- **The finished file's SHA-256 matches the publisher's own checksum.** A Linux
-  ISO downloaded end to end, verified against the distributor's `SHA256SUMS`.
-- **Bencode round-trips byte for byte** across a corpus of real `.torrent` files,
-  with the computed infohashes matching their published values.
-- **A local swarm** — several instances of this client on one machine sharing a
-  generated file — exercises seeding, choking and rarest-first without touching
-  the public network, repeatably and fast enough to run on every build.
-- **Interop in both directions** with an established client: downloading from it
-  and seeding to it, which is what proves this speaks the protocol rather than a
-  private dialect.
-- **Throughput, peer counts and time to first DHT peer**, recorded rather than
-  estimated.
-
-## Milestones
-
-| # | Milestone | Done when |
-|---|---|---|
-| **1** | **Bencode, metainfo, infohash** | **Done — computed infohashes match real `.torrent` files** |
-| **2** | **HTTP tracker announce** | **Done — a live peer list comes back** |
-| **3** | **One peer, one piece** | **Done — a single piece downloads and its SHA-1 verifies** |
-| **4** | **Full download, multi-file, resume** | **Done — an ISO's published SHA-256 matches** |
-| **5** | **Piece picker, pipelining, many peers** | **Done — sustained throughput on a real swarm** |
-| **6** | **Seeding and choking** | **Done — the local swarm test passes** |
-| **7** | **UDP trackers, magnet, `ut_metadata`** | **Done — a magnet link downloads from scratch** |
-| **8** | **DHT** | **Done — peers found with no tracker involved** |
-| **9** | **The window: piece map, peers, graphs, rate limits, UPnP** | **Done** |
-| **10** | **More than one torrent: add, remove, a list that survives a restart** | **Done** |
-| **11** | **Status and pause: checking, downloading, stalled, seeding, paused** | **Done — pausing keeps the progress and rehashes nothing** |
-| **12** | **File priorities, including not downloading a file at all** | **Done — a torrent is finished when every wanted piece is held** |
-| **13** | **Notification area, one instance, settings, about** | **Done** |
 
 ## Building
 
@@ -174,172 +104,53 @@ tests/Bitfield.Tests offline checks
 
 ## Notes
 
-### One client at a time
-
-Two copies of a torrent client are worse than one in a way two copies of most
-applications are not: they would both bind the same listening port and both
-write the same torrents' files. So the second launch does not start a client.
-It hands whatever it was asked to open to the one already running — which is
-also what makes double-clicking a `.torrent` work while the client is in the
-notification area — and if it cannot reach it, it says so rather than
-disappearing.
-
-### Pieces and files do not line up
-
-A piece routinely spans two or three files, which is what makes file priorities
-more than a filter. A piece belonging to a file nobody wants and one somebody
-does is wanted, because the part that matters cannot be had without it; and a
-piece takes the highest priority of the files it touches, because the file that
-wants it most decides when it arrives.
-
-The same arithmetic means a file set aside is not always empty. Where it shares
-a boundary piece with a file that is wanted, part of it arrives anyway — so the
-file list says so, in as many words, rather than leaving somebody to find out.
-
-This is also where "complete" stops meaning "every piece". A torrent skipping
-half its files is finished at half its pieces, and a client that waited for the
-rest would never finish at all.
-
-### What a tracker is told, and when
-
-A download that ended used to announce `completed` to its tracker whatever had
-actually happened — including a torrent cancelled at forty per cent. On a
-tracker that keeps ratios that is a client claiming to have finished something
-it did not, which is the sort of thing that gets an account looked at.
-
-It now announces `stopped` whenever it leaves a swarm, and `completed` exactly
-once: at the moment the piece that finishes the torrent verifies, and only if
-it did not start finished.
-
-### Pausing must not rehash
-
-The obvious way to implement pausing is to tear the download down and, on
-resume, let it work out what is on disk the way it does at startup. That is
-minutes of hashing for a torrent that was paused for a second, and on a large
-torrent it is the difference between a pause being free and being something you
-avoid using.
-
-So what a torrent holds is kept by the session rather than by the download, and
-the download is rebuilt around it. The check for this watches the session
-throughout a pause and resume and fails if it ever goes back to checking.
-
-### The engine is not the window
-
-A torrent client spends most of its life with nobody looking at it, so anything
-the window owns is something that has to stay open for the downloads to keep
-running. The engine — the torrents, the DHT node, the listening port, the
-limits they share — is its own object, and the window reads a snapshot of it on
-a timer. That is what the notification area needs later, and it is also why one
-badly behaved control cannot take a download down with it.
-
-The list of torrents lives beside the client rather than beside the downloads:
-three files per torrent in the client's own folder, holding the metainfo, the
-resume data and where the content is going. A torrent added from a magnet link
-never had a file to be re-opened from, so its info dictionary is written out as
-the torrent file it would have been — the same bytes, so the same infohash.
-
-### The routing table is worth nothing without its id
-
-The DHT's buckets are cut by distance from this node's own id, and a node that
-comes back under a fresh id has a table sorted for somebody else. Measuring it
-made that concrete: of 81 saved nodes, 16 survived being restored. Saving the
-id alongside them takes the figure to all of them, and the bootstrap routers —
-which carry the first question of every client on the network — can then be
-left alone entirely.
-
-The other half of the same point is that other nodes' tables go on pointing at
-the id this one had last time, so changing it every run throws that away too.
-
-### A magnet link is a hash and a promise
-
-A magnet link carries the torrent's infohash and, beyond that, only hints: a
-name to show, some trackers to try, sometimes a peer or two. The description
-that would have been in a `.torrent` file has to be asked of the swarm, which
-means taking it from a stranger who has every opportunity to hand over a
-description of something else.
-
-What makes that safe is the same thing that makes the pieces safe. The
-description's SHA-1 has to be the infohash the link asked for, so a substituted
-one is caught before a byte of it is believed — and the bytes are kept exactly
-as the peer sent them, because that hash is taken over those bytes rather than
-over a re-encoding, which is the same reason a torrent read from a file keeps
-its info dictionary's original range.
-
-The name in the link is treated as what it is: in the swarm test the link says
-one thing and the fetched description says another, and it is the description
-that wins.
-
-### The missing port, and what happened when it was opened
-
-Seeding the finished Debian ISO to the public swarm for ten minutes uploaded
-nothing at all, and counting what the peers were said why: every one that got
-as far as sending its bitfield held the whole torrent already — nine of nine on
-that run. A heavily seeded torrent has few leechers, those leechers dial out to
-seeds rather than waiting to be dialled, and this client was not listening
-anywhere they could reach.
-
-With the UPnP mapping in, that prediction could be tested rather than argued.
-The same ISO, the same four-minute window, the port forwarded and a listener
-behind it: one peer that was not a seed arrived, was unchoked, and took
-**4,276,224 bytes**. The diagnosis was right, and serving blocks to strangers
-is no longer something this README only claims.
-
-### Why the swarm test removes the seed
-
-A client can be made to download from a peer that has everything without most
-of it working: no uploading, no choking, nothing listening. The test therefore
-has a second phase. The seed is shut down, and a fresh leecher is pointed at
-the two peers that just finished — so the only copies left in the swarm are the
-ones this client produced and is now serving. It completes, and its bytes match
-the original.
-
 ### What rarest first did and did not do
 
 Rarest first and adaptive pipelining went in expecting the download to get
-faster. It did not: 49.1 s against the 48.0 s the same ISO took when pieces
-were picked in order with a fixed sixteen requests outstanding. The same file
-over HTTP from Debian's own mirror, one stream, comes down at 18.32 MB/s, and
-this client reaches about 85% of that — so what limits it is the line, not the
-order the pieces are asked for.
+faster. It did not: 49.1 s against the 48.0 s the same ISO took when pieces were
+picked in order with a fixed sixteen requests outstanding. The same file over
+HTTP from Debian's own mirror comes down at 18.32 MB/s, and this client reaches
+about 85% of that — so what limits it is the line, not the order the pieces are
+asked for.
 
 The change is doing its job; it is simply not the thing in the way. Adaptive
-pipelining is visible in the run: the fastest peer of that download was being
-kept waiting on 73 blocks at once, against the flat sixteen it would have had
-before. And rarest first earns its place for a different reason than speed — it
-stops a torrent needing, at 99%, a piece only one departed peer ever had, and
-it is what spreads a new piece through a swarm instead of everyone queueing at
-the same seed. Neither shows up in the time to fetch a well-seeded Debian ISO.
+pipelining is visible in the run: the fastest peer was being kept waiting on 73
+blocks at once, against the flat sixteen it would have had before. And rarest
+first earns its place for a different reason than speed — it stops a torrent
+needing, at 99%, a piece only one departed peer ever had. Neither shows up in
+the time to fetch a well-seeded Debian ISO.
 
-### Why the finished file is checked against somebody else's number
+### The missing port, and what happened when it was opened
 
-Every piece is checked against a hash from the torrent file, so a download that
-completes is self-consistent by construction — which means it proves nothing on
-its own. The measurement that counts is the SHA-256 of the finished ISO against
-the one Debian publishes: made by someone else, about the same bytes, and
-nothing in this repository can influence it.
+Seeding the finished ISO to the public swarm for ten minutes uploaded nothing at
+all, and counting what the peers were said why: every one that got as far as
+sending its bitfield held the whole torrent already — nine of nine. A heavily
+seeded torrent has few leechers, those leechers dial out to seeds rather than
+waiting to be dialled, and this client was not listening anywhere they could
+reach.
 
-### Why nothing is trusted until it hashes
+With the UPnP mapping in, that could be tested rather than argued. Same ISO,
+same four-minute window, port forwarded: one peer that was not a seed arrived,
+was unchoked, and took **4,276,224 bytes**.
 
-Any peer can send any bytes. The torrent file carries a SHA-1 for every piece,
-and a piece whose hash does not match is thrown away rather than written — that
-check is the only thing between a swarm of strangers and the file on disk, and
-it is the reason a download from people nobody vouches for can be relied on at
-all.
+### The routing table is worth nothing without its id
 
-It is worth being clear about which risk this covers. The hashes come from the
-torrent file, so they are only as trustworthy as wherever that came from; what
-they guarantee is that the bytes assembled here are the bytes that torrent
-describes, whoever sent them and however many peers they came from.
+The DHT's buckets are cut by distance from this node's own id, so a node that
+comes back under a fresh id has a table sorted for somebody else. Measuring it
+made that concrete: of 81 saved nodes, 16 survived being restored. Saving the id
+alongside them takes the figure to all of them, and the bootstrap routers —
+which carry the first question of every client on the network — can then be left
+alone entirely. The other half of the same point is that other nodes' tables go
+on pointing at the id this one had last time.
 
-### Why the announce URL is built by hand
+### What a tracker is told, and when
 
-The infohash and peer id go into the tracker's query string as twenty raw bytes
-each, not as text. Handing them to a general-purpose URL encoder means deciding
-what encoding those bytes are text in, and whichever is chosen, the bytes that
-are not valid in it come back replaced rather than escaped. The result is a
-different infohash, and every tracker answers that it has never heard of the
-torrent. So the bytes are percent-encoded one at a time, and a check compares
-the finished URL against one built by a different encoder.
+A download that ended used to announce `completed` whatever had actually
+happened — including a torrent cancelled at forty per cent. On a tracker that
+keeps ratios that is a client claiming to have finished something it did not.
+It now announces `stopped` whenever it leaves a swarm, and `completed` exactly
+once: at the moment the piece that finishes the torrent verifies, and only if it
+did not start finished.
 
 ### Why the info dictionary is kept as bytes
 
@@ -349,13 +160,17 @@ it looks equivalent and is not: a file may carry keys this client has never
 heard of, or carry them in an order it would not have chosen, and either
 difference produces a hash that no peer and no tracker recognises. So the parser
 records the byte range of every value it reads, and the infohash is taken
-straight from the file.
+straight from the file. The checks hold it to that from both sides — every real
+torrent file re-encodes to the bytes it came from, and a synthetic torrent with
+unsorted and unknown keys keeps its own identity rather than a tidied one.
 
-The checks hold it to that from both sides: every real torrent file re-encodes
-to the same bytes it came from, and a synthetic torrent with unsorted and
-unknown keys in its info dictionary keeps its own identity rather than a tidied
-one.
+### Why the finished file is checked against somebody else's number
 
+Every piece is checked against a hash from the torrent file, so a download that
+completes is self-consistent by construction — which means it proves nothing on
+its own. The measurement that counts is the SHA-256 of the finished ISO against
+the one Debian publishes: made by someone else, about the same bytes, and
+nothing in this repository can influence it.
 
 ## License
 
