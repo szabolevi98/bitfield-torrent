@@ -11,13 +11,26 @@ download proceeds.
 
 ## Status
 
-Milestone 1 of 9. Torrent files are read and identified correctly; nothing is
-transferred yet — there is no tracker client and no peer connection. The window
-opens and is empty.
+Milestone 2 of 9. Torrent files are read and identified correctly, and real
+trackers answer with real peers. Nothing is transferred yet — no peer has been
+connected to. The window opens and is empty.
 
-**149 offline checks pass**, covering the bencode reader and writer, the
-metainfo model, and three real torrent files whose infohashes, piece counts and
-lengths are matched against values derived with a separate implementation.
+**196 offline checks pass**, covering the bencode reader and writer, the
+metainfo model, the announce request down to its exact bytes, every shape a
+tracker reply arrives in, and three real torrent files whose infohashes, piece
+counts and lengths are matched against values derived with a separate
+implementation.
+
+Announcing for real, on 2026-09-17:
+
+| Tracker | Answered in | Reported | Peers |
+|---|---:|---|---:|
+| `bttracker.debian.org` (HTTP) | 190 ms | swarm sizes not reported | 50 |
+| `torrent.ubuntu.com` (HTTPS) | 348 ms | 1,608 seeders, 31 leechers | 1 |
+
+```
+dotnet run --project tests/Bitfield.Tests -- announce [path to a .torrent]
+```
 
 Nothing below is claimed as working until it has a measurement beside it.
 
@@ -69,7 +82,7 @@ say so rather than to look reassuring:
 | # | Milestone | Done when |
 |---|---|---|
 | **1** | **Bencode, metainfo, infohash** | **Done — computed infohashes match real `.torrent` files** |
-| 2 | HTTP tracker announce | A live peer list comes back |
+| **2** | **HTTP tracker announce** | **Done — a live peer list comes back** |
 | 3 | One peer, one piece | A single piece downloads and its SHA-1 verifies |
 | 4 | Full download, multi-file, resume | An ISO's published SHA-256 matches |
 | 5 | Piece picker, pipelining, many peers | Sustained throughput on a real swarm |
@@ -96,6 +109,16 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### Why the announce URL is built by hand
+
+The infohash and peer id go into the tracker's query string as twenty raw bytes
+each, not as text. Handing them to a general-purpose URL encoder means deciding
+what encoding those bytes are text in, and whichever is chosen, the bytes that
+are not valid in it come back replaced rather than escaped. The result is a
+different infohash, and every tracker answers that it has never heard of the
+torrent. So the bytes are percent-encoded one at a time, and a check compares
+the finished URL against one built by a different encoder.
 
 ### Why the info dictionary is kept as bytes
 
