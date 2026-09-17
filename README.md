@@ -11,23 +11,28 @@ download proceeds.
 
 ## Status
 
-Milestone 7 of 9. **It downloads, it shares, and it starts from a magnet
-link.** A torrent is read — from a file, or from nothing but its hash by asking
-the swarm for its description — its trackers answer over HTTP or UDP, a few
-dozen peers are kept busy at once, pieces are picked rarest first, and every
-piece that verifies is written across the files it straddles. An interrupted
-download picks up where it left off. Peers that connect are answered, blocks
-are served from disk, and the choking algorithm decides which few are worth
-answering. Still to come: the DHT — and the window opens and is empty.
+Milestone 8 of 9. **Everything under the window works.** A torrent is read —
+from a file, or from nothing but its hash by asking the swarm for its
+description — its trackers answer over HTTP or UDP, the DHT finds peers with no
+tracker at all, a few dozen peers are kept busy at once, pieces are picked
+rarest first, and every piece that verifies is written across the files it
+straddles. An interrupted download picks up where it left off. Peers that
+connect are answered, blocks are served from disk, and the choking algorithm
+decides which few are worth answering.
 
-**368 offline checks pass**, covering the bencode reader and writer, the
+What is left is the window, which opens and is empty.
+
+**399 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
 tracker reply arrives in, the peer handshake and every wire message, the piece
-picker, and writing pieces across file boundaries — plus three real torrent
-files whose infohashes, piece counts and lengths are matched against values
-derived with a separate implementation.
+picker, the DHT's distance arithmetic, routing table and messages, and writing
+pieces across file boundaries — plus three real torrent files whose infohashes,
+piece counts and lengths are matched against values derived with a separate
+implementation.
 
-Among them is a swarm of this client talking to itself over loopback: a seed
+Among them are eight DHT nodes on loopback, where one announces a torrent and
+another that has never heard of it looks the torrent up and is told where to
+find it — and a swarm of this client talking to itself over loopback: a seed
 and two leechers, and then **a third leecher that finishes with the seed
 removed from the swarm entirely**, served only by the two peers that had just
 downloaded it themselves. That needs the uploading side, the choking algorithm
@@ -48,6 +53,8 @@ Against the live swarm, on 2026-09-17:
 | **The same ISO from a magnet link — hash only, UDP tracker** | **description fetched from a stranger in 726 ms, then 792,723,456 bytes in 69.8 s, SHA-256 matching** |
 | `tracker.opentrackr.org` (UDP) | 32 peers |
 | The description from a magnet link, over an HTTP tracker | 60,578 bytes from an rqbit 8.1.1 peer, 562 ms, infohash verified |
+| **The Debian ISO's peers from the real DHT, no tracker at all** | **joined in 41 s, then 100 peers in 12.3 s** |
+| The same with last run's routing table restored | bootstrap routers skipped entirely, 100 peers in 8.3 s |
 | Seeding that ISO to the public swarm for ten minutes | **nothing uploaded — see below** |
 
 ```
@@ -112,7 +119,7 @@ say so rather than to look reassuring:
 | **5** | **Piece picker, pipelining, many peers** | **Done — sustained throughput on a real swarm** |
 | **6** | **Seeding and choking** | **Done — the local swarm test passes** |
 | **7** | **UDP trackers, magnet, `ut_metadata`** | **Done — a magnet link downloads from scratch** |
-| 8 | DHT | Peers found with no tracker involved |
+| **8** | **DHT** | **Done — peers found with no tracker involved** |
 | 9 | The window: piece map, peers, graphs, rate limits, UPnP | — |
 
 ## Building
@@ -133,6 +140,18 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### The routing table is worth nothing without its id
+
+The DHT's buckets are cut by distance from this node's own id, and a node that
+comes back under a fresh id has a table sorted for somebody else. Measuring it
+made that concrete: of 81 saved nodes, 16 survived being restored. Saving the
+id alongside them takes the figure to all of them, and the bootstrap routers —
+which carry the first question of every client on the network — can then be
+left alone entirely.
+
+The other half of the same point is that other nodes' tables go on pointing at
+the id this one had last time, so changing it every run throws that away too.
 
 ### A magnet link is a hash and a promise
 

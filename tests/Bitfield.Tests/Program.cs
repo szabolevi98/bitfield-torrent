@@ -15,6 +15,7 @@ if (args.Length > 0)
         "download" => LiveDownloadRunner.Run(args),
         "seed" => LiveSeedRunner.Run(args),
         "magnet" => LiveMagnetRunner.Run(args),
+        "dht" => LiveDhtRunner.Run(args),
         _ => LiveTrackerRunner.Run(args),
     };
 }
@@ -44,6 +45,7 @@ PeerProtocolTests.Run((name, pass, detail) => Check(name, pass, detail));
 StorageTests.Run((name, pass, detail) => Check(name, pass, detail));
 PickerTests.Run((name, pass, detail) => Check(name, pass, detail));
 MagnetTests.Run((name, pass, detail) => Check(name, pass, detail));
+DhtTests.Run((name, pass, detail) => Check(name, pass, detail));
 SwarmTests.Run((name, pass, detail) => Check(name, pass, detail));
 
 Console.WriteLine();

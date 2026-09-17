@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
+using Bitfield.Core.Dht;
 using Bitfield.Core.Peers;
 using Bitfield.Core.Storage;
 using Bitfield.Core.Torrents;
@@ -104,6 +105,18 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     /// </summary>
     public TimeSpan ChokeInterval { get; init; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// A DHT node to find peers through, when the torrent allows it. A torrent
+    /// marked private is to be found through its tracker and nowhere else, so
+    /// this stays unused for those however it is set — the flag is not
+    /// advisory, and ignoring it is how a user gets banned from the tracker
+    /// that set it.
+    /// </summary>
+    public DhtNode? Dht { get; init; }
+
+    /// <summary>How often to ask the DHT again for more peers.</summary>
+    public TimeSpan DhtInterval { get; init; } = TimeSpan.FromMinutes(10);
+
     public InfoHash InfoHash => _torrent.InfoHash;
 
     public PeerId PeerId => _peerId;
@@ -153,6 +166,7 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
         Task connecting = ConnectLoopAsync(finished.Token);
         Task reporting = ReportLoopAsync(finished.Token);
         Task choking = ChokeLoopAsync(finished.Token);
+        Task dht = DhtLoopAsync(finished.Token);
 
         try
         {
@@ -169,7 +183,8 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
                 Quietly(announcing),
                 Quietly(connecting),
                 Quietly(reporting),
-                Quietly(choking)).ConfigureAwait(false);
+                Quietly(choking),
+                Quietly(dht)).ConfigureAwait(false);
 
             SaveResume();
 
@@ -227,6 +242,65 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
             catch (OperationCanceledException)
             {
                 return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finds peers through the DHT and tells it this client is one, over and
+    /// over. Does nothing at all for a private torrent.
+    /// </summary>
+    private async Task DhtLoopAsync(CancellationToken cancellationToken)
+    {
+        if (Dht == null)
+        {
+            return;
+        }
+
+        if (_torrent.IsPrivate)
+        {
+            Note?.Invoke("the torrent is private, so the DHT stays out of it");
+            return;
+        }
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                IReadOnlyList<IPEndPoint> found = await Dht
+                    .FindPeersAsync(_torrent.InfoHash, cancellationToken).ConfigureAwait(false);
+
+                foreach (IPEndPoint peer in found)
+                {
+                    _known.TryAdd(peer, 0);
+                }
+
+                Note?.Invoke($"the DHT gave {found.Count} peers from {Dht.Table.Count} nodes");
+
+                int announced = await Dht.AnnounceAsync(_torrent.InfoHash, cancellationToken).ConfigureAwait(false);
+                if (announced > 0)
+                {
+                    Note?.Invoke($"announced to {announced} DHT nodes");
+                }
+
+                await Task.Delay(DhtInterval, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception e)
+            {
+                Note?.Invoke($"dht: {e.Message}");
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
             }
         }
     }
