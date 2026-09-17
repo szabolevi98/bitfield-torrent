@@ -45,6 +45,57 @@ internal static partial class NativeMethods
         }
     }
 
+    /// <summary>
+    /// Opts the process into dark common controls. A scroll bar is drawn by
+    /// Windows rather than by the control it belongs to, so it stays white
+    /// however dark the list behind it is painted — a white stripe down the
+    /// side of a dark window. The two entry points are exported by ordinal
+    /// only, so they are bound that way.
+    /// </summary>
+    internal static void UseDarkCommonControls()
+    {
+        try
+        {
+            SetPreferredAppMode(AllowDarkMode);
+            FlushMenuThemes();
+        }
+        catch (EntryPointNotFoundException)
+        {
+            // Windows 10 before 1903 does not export these.
+        }
+        catch (DllNotFoundException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Puts one control on the dark visual style, which is what turns its
+    /// scroll bars from white to dark once the process has asked for dark
+    /// common controls.
+    /// </summary>
+    internal static void UseDarkStyle(nint control)
+    {
+        try
+        {
+            SetWindowTheme(control, "DarkMode_Explorer", nint.Zero);
+        }
+        catch (DllNotFoundException)
+        {
+        }
+    }
+
+    /// <summary>Allow dark mode where the application asks for it.</summary>
+    private const int AllowDarkMode = 1;
+
+    [LibraryImport("uxtheme.dll", EntryPoint = "#135", SetLastError = false)]
+    private static partial int SetPreferredAppMode(int mode);
+
+    [LibraryImport("uxtheme.dll", EntryPoint = "#136", SetLastError = false)]
+    private static partial void FlushMenuThemes();
+
+    [LibraryImport("uxtheme.dll", EntryPoint = "SetWindowTheme", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int SetWindowTheme(nint window, string subAppName, nint subIdList);
+
     [LibraryImport("dwmapi.dll")]
     private static partial int DwmSetWindowAttribute(nint window, int attribute, ref int value, int size);
 

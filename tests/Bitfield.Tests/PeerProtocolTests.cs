@@ -29,7 +29,7 @@ internal static class PeerProtocolTests
         PeerHandshake handshake = new()
         {
             InfoHash = InfoHash.Parse(DebianInfoHash),
-            PeerId = Id("-BF1000-abcdefghijkl"),
+            PeerId = Id("-BF1010-abcdefghijkl"),
             Reserved = ReservedBits.Ours,
         };
 
@@ -43,7 +43,7 @@ internal static class PeerProtocolTests
             Convert.ToHexStringLower(bytes.AsSpan(28, 20)) == DebianInfoHash,
             Convert.ToHexStringLower(bytes.AsSpan(28, 20)));
         check("handshake: peer id in place",
-            Encoding.ASCII.GetString(bytes, 48, 20) == "-BF1000-abcdefghijkl", "");
+            Encoding.ASCII.GetString(bytes, 48, 20) == "-BF1010-abcdefghijkl", "");
 
         PeerHandshake parsed = PeerHandshake.Parse(bytes);
         check("handshake: reads back what it wrote",

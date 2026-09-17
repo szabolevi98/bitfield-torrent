@@ -11,8 +11,8 @@ download proceeds.
 
 ![Bitfield Torrent downloading a Debian ISO](docs/screenshot.png)
 
-Three torrents — one downloading the Debian netinst ISO at 12 MB/s across 27
-peers, one stalled, one paused. The speckle in the piece map is what rarest
+Three torrents — one downloading the Debian netinst ISO at 15.6 MB/s across 31
+peers, one paused, one stalled. The speckle in the piece map is what rarest
 first looks like: pieces arriving from all over the torrent rather than in
 order.
 

@@ -35,12 +35,12 @@ public readonly struct PeerId : IEquatable<PeerId>
     }
 
     /// <summary>
-    /// A fresh peer id in the Azureus style: <c>-BF1000-</c> followed by twelve
+    /// A fresh peer id in the Azureus style: <c>-BF1010-</c> followed by twelve
     /// random characters. Random rather than derived from anything, so that two
     /// runs on the same machine are two different peers as far as the swarm is
     /// concerned.
     /// </summary>
-    public static PeerId Generate(int major = 1, int minor = 0, int patch = 0)
+    public static PeerId Generate(int major = 1, int minor = 0, int patch = 1)
     {
         Span<byte> bytes = stackalloc byte[Size];
 

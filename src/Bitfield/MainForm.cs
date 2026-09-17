@@ -476,6 +476,11 @@ internal sealed class MainForm : Form
         _log.Font = Theme.CaptionFont;
         _log.IntegralHeight = false;
 
+        // The only control here whose scroll bar Windows draws rather than this
+        // application, so it is the only one that has to be told about the dark
+        // style by hand.
+        _log.HandleCreated += (_, _) => Native.NativeMethods.UseDarkStyle(_log.Handle);
+
         Panel host = new() { Dock = DockStyle.Bottom, Height = 84, Padding = new Padding(12, 8, 12, 8), BackColor = Theme.Background };
         host.Controls.Add(_log);
         return host;

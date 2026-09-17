@@ -41,7 +41,7 @@ public static class MetadataExchange
             ("m", Dictionary(("ut_metadata", new BInteger(OurMetadataExtension)))),
             ("p", new BInteger(port)),
             ("reqq", new BInteger(250)),
-            ("v", new BString("Bitfield 1.0")),
+            ("v", new BString("Bitfield 1.0.1")),
         ];
 
         if (metadataSize is { } size)
