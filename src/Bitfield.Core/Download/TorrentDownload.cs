@@ -25,6 +25,9 @@ public sealed record DownloadProgress
 
     public int FailedPieces { get; init; }
 
+    /// <summary>Connected peers that hold the whole torrent themselves.</summary>
+    public int SeedPeers { get; init; }
+
     /// <summary>Peers that have said they want something this client holds.</summary>
     public int InterestedPeers { get; init; }
 
@@ -130,6 +133,7 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
         ConnectedPeers = _sessions.Count,
         BytesPerSecond = Downloaded / Math.Max(_clock.Elapsed.TotalSeconds, 0.001),
         FailedPieces = _failedPieces,
+        SeedPeers = _sessions.Values.Count(s => s.State.Available.IsComplete),
         InterestedPeers = _sessions.Values.Count(s => s.State.PeerInterested),
         UnchokedPeers = _sessions.Values.Count(s => !s.State.ChokingPeer),
         FastestPeer = _sessions.IsEmpty ? 0 : _sessions.Values.Max(s => s.BytesPerSecond),

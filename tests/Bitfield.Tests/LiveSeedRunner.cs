@@ -98,6 +98,7 @@ internal static class LiveSeedRunner
             Console.Write(
                 $"\rseeding   {now,5:N0} s  "
                 + $"{progress.ConnectedPeers,3} peers  "
+                + $"{progress.SeedPeers,3} of them seeds  "
                 + $"{progress.InterestedPeers,3} interested  "
                 + $"{progress.UnchokedPeers,3} unchoked  "
                 + $"uploaded {uploaded / (1024.0 * 1024),8:N2} MB  "

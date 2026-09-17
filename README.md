@@ -44,6 +44,7 @@ Against the live swarm, on 2026-09-17:
 | `torrent.ubuntu.com` (HTTPS) | answered in 348 ms, 1,608 seeders reported |
 | Piece 0 from a qBittorrent 5.1.0 peer / an rqbit 8.1.1 peer | SHA-1 verified in 1,122 ms / 351 ms |
 | The same ISO over HTTP from Debian's mirror, one stream, for comparison | 18.32 MB/s |
+| Seeding that ISO to the public swarm for ten minutes | **nothing uploaded — see below** |
 
 ```
 dotnet run --project tests/Bitfield.Tests -- announce [path to a .torrent]
@@ -128,6 +129,26 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### Uploading to strangers is not demonstrated yet
+
+Seeding the finished Debian ISO to the public swarm for ten minutes uploaded
+nothing at all. Instrumenting the connections says why rather than leaving it
+to be guessed at: of the peers connected, every one that got as far as sending
+its bitfield held the whole torrent already — nine out of nine on the last run.
+
+A heavily seeded torrent has few leechers, and the leechers it does have dial
+out to seeds rather than waiting to be dialled. This client is not listening on
+a port anything can reach, so those leechers cannot arrive, and the peers it
+reaches out to itself are seeds with nothing to want. What the ten minutes
+measured is the shape of that swarm and the absence of an open port, not the
+code that serves blocks.
+
+That code is exercised, just not by strangers: the loopback swarm has this
+client serving a full torrent to a peer that started with nothing, with no
+original seed present. Settling it properly needs a reachable port — the UPnP
+mapping is milestone 9 — or a run against an established client on the same
+machine. Neither has been done, so nothing here claims it.
 
 ### Why the swarm test removes the seed
 
