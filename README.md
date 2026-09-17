@@ -18,9 +18,7 @@ darker cells the ones in flight.
 
 ## Status
 
-Milestone 12 of 13. **It works, it has a window, and it runs, pauses and
-resumes more than one torrent — downloading only the files you want.** A
-torrent is read —
+Milestone 13 of 13. **A torrent client.** A torrent is read —
 from a file, or from nothing but its hash by asking the swarm for its
 description — its trackers answer over HTTP or UDP, the DHT finds peers with no
 tracker at all, a few dozen peers are kept busy at once, pieces are picked
@@ -45,9 +43,14 @@ Files can be set aside or asked for sooner. A file marked *do not download* has
 its pieces skipped, and the torrent is finished when every piece it still wants
 is held — not when every piece is.
 
-Still to come: the notification area, settings and an about box.
+It lives in the notification area, so the window can be closed without stopping
+anything, and says when a torrent finishes. A second launch hands its torrent to
+the client already running rather than starting a rival that would fight over
+the same port and the same files. What is worth changing is changeable:
+default folder, port, UPnP, the DHT, rate limits, the peer budget, tray
+behaviour and starting with Windows.
 
-**448 offline checks pass**, covering the bencode reader and writer, the
+**454 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
 tracker reply arrives in, the peer handshake and every wire message, the piece
 picker, the DHT's distance arithmetic, routing table and messages, and writing
@@ -150,7 +153,7 @@ say so rather than to look reassuring:
 | **10** | **More than one torrent: add, remove, a list that survives a restart** | **Done** |
 | **11** | **Status and pause: checking, downloading, stalled, seeding, paused** | **Done — pausing keeps the progress and rehashes nothing** |
 | **12** | **File priorities, including not downloading a file at all** | **Done — a torrent is finished when every wanted piece is held** |
-| 13 | Notification area, one instance, settings, about | — |
+| **13** | **Notification area, one instance, settings, about** | **Done** |
 
 ## Building
 
@@ -170,6 +173,16 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### One client at a time
+
+Two copies of a torrent client are worse than one in a way two copies of most
+applications are not: they would both bind the same listening port and both
+write the same torrents' files. So the second launch does not start a client.
+It hands whatever it was asked to open to the one already running — which is
+also what makes double-clicking a `.torrent` work while the client is in the
+notification area — and if it cannot reach it, it says so rather than
+disappearing.
 
 ### Pieces and files do not line up
 

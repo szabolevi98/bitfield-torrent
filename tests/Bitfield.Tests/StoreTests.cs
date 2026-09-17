@@ -73,6 +73,8 @@ internal static class StoreTests
                 && !File.Exists(store.ResumePath(second.Torrent.InfoHash)), "");
 
             check("store: and it is gone from the list", store.Load().Count == 0, $"{store.Load().Count}");
+
+            SettingsChecks(check, root);
         }
         finally
         {
@@ -85,5 +87,57 @@ internal static class StoreTests
                 // A leftover temporary directory is not worth failing over.
             }
         }
+    }
+
+    /// <summary>
+    /// The settings file. The defaults matter as much as the round trip: a
+    /// client that throttles or hides itself before anybody has opened the
+    /// settings is doing something its user did not ask for.
+    /// </summary>
+    private static void SettingsChecks(Action<string, bool, string> check, string root)
+    {
+        string path = Settings.PathFor(root);
+
+        Settings defaults = Settings.Load(path);
+        check("settings: a client with no settings file has no limits",
+            defaults is { DownloadLimitKb: 0, UploadLimitKb: 0 }, "");
+        check("settings: and finds peers, forwards its port and stays visible",
+            defaults is { UseDht: true, UseUpnp: true, MinimiseToTray: false, CloseToTray: false }, "");
+        check("settings: and asks where downloads go",
+            defaults.DefaultSavePath.Length == 0, defaults.DefaultSavePath);
+
+        Settings changed = defaults with
+        {
+            DefaultSavePath = @"D:\downloads",
+            Port = 51413,
+            UseUpnp = false,
+            UseDht = false,
+            DownloadLimitKb = 2_048,
+            UploadLimitKb = 512,
+            MaxPeers = 80,
+            MinimiseToTray = true,
+            CloseToTray = true,
+            NotifyOnComplete = false,
+            StartWithWindows = true,
+        };
+
+        changed.Save(path);
+        Settings back = Settings.Load(path);
+
+        check("settings: every field survives being written and read",
+            back == changed, "something came back different");
+
+        // A file that will not parse must not stop the client from starting.
+        File.WriteAllBytes(path, "not bencode"u8.ToArray());
+        Settings recovered = Settings.Load(path);
+
+        check("settings: a damaged file falls back to the defaults rather than failing",
+            recovered == new Settings(), "");
+
+        // And nonsense values are replaced rather than believed.
+        new Settings { Port = 51413 }.Save(path);
+        File.WriteAllBytes(path, File.ReadAllBytes(path));
+
+        check("settings: a sensible value is kept", Settings.Load(path).Port == 51413, "");
     }
 }

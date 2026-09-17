@@ -1,5 +1,6 @@
 using Bitfield.Controls;
 using Bitfield.Core.Client;
+using Bitfield.Core.Storage;
 using Bitfield.Core.Download;
 using Bitfield.Core.Torrents;
 
@@ -16,6 +17,8 @@ namespace Bitfield;
 internal sealed class MainForm : Form
 {
     private readonly Engine _engine = new();
+    private readonly NotifyIcon _tray = new();
+    private bool _reallyClosing;
 
     private readonly TorrentListControl _list = new() { Dock = DockStyle.Fill };
     private readonly PieceMapControl _map = new() { Dock = DockStyle.Fill };
@@ -72,7 +75,162 @@ internal sealed class MainForm : Form
             OpenFromCommandLine();
         };
 
-        FormClosing += (_, _) => Shutdown();
+        BuildTray();
+
+        Resize += (_, _) =>
+        {
+            if (WindowState == FormWindowState.Minimized && _engine.Settings.MinimiseToTray)
+            {
+                HideToTray();
+            }
+        };
+
+        FormClosing += OnClosing;
+    }
+
+    /// <summary>
+    /// The notification area, which is where a torrent client spends most of
+    /// its life. The engine runs whether this window is on screen or not, and
+    /// the icon is what says so.
+    /// </summary>
+    private void BuildTray()
+    {
+        _tray.Icon = Icon;
+        _tray.Text = "Bitfield Torrent";
+        _tray.Visible = true;
+
+        ContextMenuStrip menu = new()
+        {
+            BackColor = Theme.SurfaceRaised,
+            ForeColor = Theme.TextPrimary,
+            Font = Theme.UiFont,
+            ShowImageMargin = false,
+        };
+
+        menu.Items.Add("Show", null, (_, _) => ShowFromTray());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Pause all", null, (_, _) => PauseAll(true));
+        menu.Items.Add("Resume all", null, (_, _) => PauseAll(false));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit", null, (_, _) =>
+        {
+            _reallyClosing = true;
+            Close();
+        });
+
+        _tray.ContextMenuStrip = menu;
+        _tray.DoubleClick += (_, _) => ShowFromTray();
+
+        _engine.Completed += session =>
+        {
+            if (_engine.Settings.NotifyOnComplete)
+            {
+                BeginInvoke(() => _tray.ShowBalloonTip(5000, "Finished", session.Name, ToolTipIcon.Info));
+            }
+        };
+    }
+
+    private void ShowAbout()
+    {
+        using AboutForm about = new();
+        about.ShowDialog(this);
+    }
+
+    private void PauseAll(bool paused)
+    {
+        foreach (TorrentSession session in _engine.Torrents)
+        {
+            _engine.SetPaused(session.InfoHash, paused);
+        }
+    }
+
+    private void HideToTray()
+    {
+        Hide();
+        ShowInTaskbar = false;
+    }
+
+    private void ShowFromTray()
+    {
+        Show();
+        ShowInTaskbar = true;
+        WindowState = FormWindowState.Normal;
+        Activate();
+    }
+
+    /// <summary>Opens what another launch of the client was asked to open.</summary>
+    public void OpenFromAnotherLaunch(string argument)
+    {
+        BeginInvoke(() =>
+        {
+            ShowFromTray();
+
+            try
+            {
+                if (MagnetLink.TryParse(argument, out MagnetLink? link, out _))
+                {
+                    ResolveAndAdd(link!, null);
+                    return;
+                }
+
+                Add(Metainfo.Load(argument), null);
+            }
+            catch (Exception e)
+            {
+                Note($"could not open {argument}: {e.Message}");
+            }
+        });
+    }
+
+    private void OpenSettings()
+    {
+        using SettingsForm settings = new(_engine.Settings);
+
+        if (settings.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _engine.UpdateSettings(settings.Result);
+        _downLimit.Text = settings.Result.DownloadLimitKb.ToString();
+        _upLimit.Text = settings.Result.UploadLimitKb.ToString();
+        Note("settings saved");
+    }
+
+    /// <summary>
+    /// Closing either ends the client or puts it in the notification area, and
+    /// asks first when torrents are still running — a client that stops a
+    /// download because somebody reached for the X is a client that loses work.
+    /// </summary>
+    private void OnClosing(object? sender, FormClosingEventArgs e)
+    {
+        if (!_reallyClosing && e.CloseReason == CloseReason.UserClosing)
+        {
+            if (_engine.Settings.CloseToTray)
+            {
+                e.Cancel = true;
+                HideToTray();
+                return;
+            }
+
+            int running = _engine.Torrents.Count(session => !session.Paused);
+
+            if (running > 0)
+            {
+                string question = running == 1
+                    ? "One torrent is still running. Close anyway?"
+                    : $"{running} torrents are still running. Close anyway?";
+
+                if (MessageBox.Show(this, question, "Bitfield Torrent",
+                        MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+            }
+        }
+
+        Shutdown();
     }
 
     private static Icon? LoadIcon()
@@ -259,6 +417,8 @@ internal sealed class MainForm : Form
         buttons.Controls.Add(Button("Add magnet…", OpenMagnet));
         buttons.Controls.Add(_pauseButton = Button("Pause", TogglePauseSelected));
         buttons.Controls.Add(Button("Remove…", () => RemoveSelected(deleteFiles: false)));
+        buttons.Controls.Add(Button("Settings…", OpenSettings));
+        buttons.Controls.Add(Button("About", ShowAbout));
 
         header.Controls.Add(buttons);
         header.Controls.Add(limits);
@@ -454,7 +614,11 @@ internal sealed class MainForm : Form
 
     private void Add(Metainfo torrent, string? directory)
     {
-        directory ??= AskForFolder(torrent.Name);
+        // The default folder is what makes adding several torrents bearable;
+        // without one set, every one of them asks.
+        directory ??= _engine.Settings.DefaultSavePath is { Length: > 0 } fallback && Directory.Exists(fallback)
+            ? fallback
+            : AskForFolder(torrent.Name);
         if (directory == null)
         {
             return;
@@ -564,6 +728,7 @@ internal sealed class MainForm : Form
 
     private void OnTick()
     {
+        _engine.CheckForCompletions();
         RefreshList();
         RefreshDetail();
     }
@@ -834,6 +999,8 @@ internal sealed class MainForm : Form
     private void Shutdown()
     {
         _tick.Stop();
+        _tray.Visible = false;
+        _tray.Dispose();
         _engine.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(10));
     }
 }

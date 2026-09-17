@@ -19,23 +19,34 @@ namespace Bitfield.Core.Client;
 public sealed class Engine : IAsyncDisposable
 {
     private readonly ConcurrentDictionary<InfoHash, TorrentSession> _torrents = new();
+    private readonly HashSet<InfoHash> _incomplete = [];
     private readonly CancellationTokenSource _stop = new();
 
     private DhtNode? _dht;
     private PeerListener? _listener;
     private PortMapping.Mapping? _mapping;
 
-    public Engine(TorrentStore? store = null)
+    public Engine(TorrentStore? store = null, Settings? settings = null)
     {
         Store = store ?? new TorrentStore();
         PeerId = PeerId.Generate();
+        Settings = settings ?? Settings.Load(Settings.PathFor(Store.Root));
+
+        Apply(Settings);
     }
 
     public TorrentStore Store { get; }
 
     public PeerId PeerId { get; }
 
-    public int Port { get; init; } = 6881;
+    /// <summary>
+    /// What the client has been told to do. Changing it takes effect at once
+    /// for the limits and the peer budget; the port and the DHT need the client
+    /// restarting, which the settings window says.
+    /// </summary>
+    public Settings Settings { get; private set; }
+
+    public int Port => Settings.Port;
 
     public RateLimiter DownloadLimit { get; } = new();
 
@@ -52,36 +63,99 @@ public sealed class Engine : IAsyncDisposable
     /// <summary>Raised when a torrent is added or removed, not on every byte.</summary>
     public event Action? Changed;
 
+    /// <summary>Raised when a torrent finishes everything it wanted.</summary>
+    public event Action<TorrentSession>? Completed;
+
+    public void UpdateSettings(Settings settings)
+    {
+        Settings = settings;
+        Apply(settings);
+
+        try
+        {
+            settings.Save(Settings.PathFor(Store.Root));
+        }
+        catch (IOException e)
+        {
+            Note?.Invoke($"the settings could not be saved: {e.Message}");
+        }
+
+        Changed?.Invoke();
+    }
+
+    private void Apply(Settings settings)
+    {
+        DownloadLimit.BytesPerSecond = (long)settings.DownloadLimitKb * 1024;
+        UploadLimit.BytesPerSecond = (long)settings.UploadLimitKb * 1024;
+        Budget.Total = settings.MaxPeers;
+    }
+
+    /// <summary>
+    /// Watches for torrents finishing, so that the client can say so once. The
+    /// window polls it rather than being called from a download's own thread.
+    /// </summary>
+    public void CheckForCompletions()
+    {
+        foreach (TorrentSession session in _torrents.Values)
+        {
+            bool complete = session.Download?.IsComplete == true;
+
+            if (complete && _incomplete.Remove(session.InfoHash))
+            {
+                Completed?.Invoke(session);
+            }
+            else if (!complete)
+            {
+                _incomplete.Add(session.InfoHash);
+            }
+        }
+    }
+
     /// <summary>
     /// Brings up everything that is shared, then puts back the torrents that
     /// were running when the client last closed.
     /// </summary>
     public async Task StartAsync()
     {
-        _dht = new DhtNode(DhtNode.SavedId(Store.DhtTablePath), Port) { PeerPort = Port };
-        _dht.Load(Store.DhtTablePath);
-        _ = Task.Run(() => _dht.RunAsync(_stop.Token), CancellationToken.None);
+        if (Settings.UseDht)
+        {
+            _dht = new DhtNode(DhtNode.SavedId(Store.DhtTablePath), Port) { PeerPort = Port };
+            _dht.Load(Store.DhtTablePath);
+            _ = Task.Run(() => _dht.RunAsync(_stop.Token), CancellationToken.None);
+        }
+        else
+        {
+            Note?.Invoke("the DHT is switched off in the settings");
+        }
 
         _listener = new PeerListener(Port, infoHash =>
             _torrents.TryGetValue(infoHash, out TorrentSession? session) ? session.Download : null);
 
         _ = Task.Run(() => _listener.RunAsync(_stop.Token), CancellationToken.None);
 
-        Note?.Invoke($"listening on {_listener.Port}, DHT on {_dht.Port}");
+        Note?.Invoke(_dht != null
+            ? $"listening on {_listener.Port}, DHT on {_dht.Port}"
+            : $"listening on {_listener.Port}");
 
-        _ = Task.Run(async () =>
+        if (Settings.UseUpnp)
         {
-            _mapping = await PortMapping.AddAsync(Port, "Bitfield Torrent", _stop.Token).ConfigureAwait(false);
-            Note?.Invoke(_mapping != null
-                ? $"the router {_mapping}"
-                : $"no router would forward port {Port}; peers can still be dialled out to");
-        }, CancellationToken.None);
+            _ = Task.Run(async () =>
+            {
+                _mapping = await PortMapping.AddAsync(Port, "Bitfield Torrent", _stop.Token).ConfigureAwait(false);
+                Note?.Invoke(_mapping != null
+                    ? $"the router {_mapping}"
+                    : $"no router would forward port {Port}; peers can still be dialled out to");
+            }, CancellationToken.None);
+        }
 
-        _ = Task.Run(async () =>
+        if (_dht is { } dht)
         {
-            int nodes = await _dht.BootstrapAsync(DhtNode.DefaultRouters, _stop.Token).ConfigureAwait(false);
-            Note?.Invoke($"the DHT has {nodes} nodes");
-        }, CancellationToken.None);
+            _ = Task.Run(async () =>
+            {
+                int nodes = await dht.BootstrapAsync(DhtNode.DefaultRouters, _stop.Token).ConfigureAwait(false);
+                Note?.Invoke($"the DHT has {nodes} nodes");
+            }, CancellationToken.None);
+        }
 
         foreach (StoredTorrent stored in Store.Load(text => Note?.Invoke(text)))
         {
