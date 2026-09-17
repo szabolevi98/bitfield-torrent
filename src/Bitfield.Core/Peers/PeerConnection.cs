@@ -25,6 +25,15 @@ public sealed class PeerConnection : IAsyncDisposable
     private readonly NetworkStream _stream;
     private readonly byte[] _lengthPrefix = new byte[4];
 
+    /// <summary>
+    /// Messages are sent from more than one place — the session asking for
+    /// blocks, and the download telling every peer about a piece that just
+    /// arrived. Two writes interleaving on the same socket would splice one
+    /// message's bytes into another's, and the peer would drop the connection
+    /// over a frame that never made sense.
+    /// </summary>
+    private readonly SemaphoreSlim _sending = new(1);
+
     private PeerConnection(Socket socket, IPEndPoint remote, PeerHandshake handshake)
     {
         _socket = socket;
@@ -92,8 +101,18 @@ public sealed class PeerConnection : IAsyncDisposable
         }
     }
 
-    public async ValueTask SendAsync(PeerMessage message, CancellationToken cancellationToken = default) =>
-        await _stream.WriteAsync(message.ToArray(), cancellationToken).ConfigureAwait(false);
+    public async ValueTask SendAsync(PeerMessage message, CancellationToken cancellationToken = default)
+    {
+        await _sending.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _stream.WriteAsync(message.ToArray(), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sending.Release();
+        }
+    }
 
     /// <summary>
     /// Reads the next message. A keep-alive — a length of zero and nothing
@@ -128,5 +147,6 @@ public sealed class PeerConnection : IAsyncDisposable
     {
         await _stream.DisposeAsync().ConfigureAwait(false);
         _socket.Dispose();
+        _sending.Dispose();
     }
 }

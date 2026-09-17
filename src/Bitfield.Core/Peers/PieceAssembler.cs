@@ -64,6 +64,9 @@ public sealed class PieceAssembler
         }
     }
 
+    /// <summary>Whether one block has already arrived.</summary>
+    public bool HasBlock(int block) => _received[block];
+
     public BlockRequest BlockAt(int block)
     {
         int begin = block * BlockRequest.BlockSize;

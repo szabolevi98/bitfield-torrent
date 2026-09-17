@@ -11,29 +11,34 @@ download proceeds.
 
 ## Status
 
-Milestone 3 of 9. Torrent files are read and identified, trackers answer with
-real peers, and content crosses the network: a piece downloaded from a stranger
-and checked against the torrent's own hash. Nothing is written to disk yet, and
-only one piece is fetched at a time. The window opens and is empty.
+Milestone 4 of 9. **It downloads.** A torrent is read, its tracker answers, a
+few dozen peers are kept busy at once, and every piece that verifies is written
+across the files it straddles. An interrupted download picks up where it left
+off. Nothing is uploaded yet, pieces are picked in order rather than rarest
+first, and the window opens and is empty.
 
-**270 offline checks pass**, covering the bencode reader and writer, the
+**315 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
-tracker reply arrives in, the peer handshake and every wire message, and three
-real torrent files whose infohashes, piece counts and lengths are matched
-against values derived with a separate implementation.
+tracker reply arrives in, the peer handshake and every wire message, the piece
+picker, and writing pieces across file boundaries — plus three real torrent
+files whose infohashes, piece counts and lengths are matched against values
+derived with a separate implementation.
 
 Against the live swarm, on 2026-09-17:
 
 | What | Result |
 |---|---|
+| **The Debian 13.7 netinst ISO, start to finish** | **792,723,456 bytes in 48.0 s — 15.75 MB/s average, 22.4 MB/s peak, 28 peers, no piece failed its hash** |
+| **Its SHA-256 against Debian's published `SHA256SUMS`** | **`a7ef94ac…e355` — matches** |
+| Resuming after 12 pieces were damaged | hashing found exactly those 12 in 2.6 s, re-fetched 3,145,728 bytes — 12 pieces to the byte — and the checksum matched again |
 | `bttracker.debian.org` (HTTP) | answered in 190 ms with 50 peers |
 | `torrent.ubuntu.com` (HTTPS) | answered in 348 ms, 1,608 seeders reported |
-| Piece 0 of the Debian ISO from a qBittorrent 5.1.0 peer | 262,144 bytes in 16 blocks, **SHA-1 verified**, 1,122 ms |
-| The same piece from an rqbit 8.1.1 peer | **SHA-1 verified**, 351 ms |
+| Piece 0 from a qBittorrent 5.1.0 peer / an rqbit 8.1.1 peer | SHA-1 verified in 1,122 ms / 351 ms |
 
 ```
 dotnet run --project tests/Bitfield.Tests -- announce [path to a .torrent]
 dotnet run --project tests/Bitfield.Tests -- piece    [path to a .torrent]
+dotnet run --project tests/Bitfield.Tests -- download <directory> [.torrent] [expected sha-256]
 ```
 
 Nothing below is claimed as working until it has a measurement beside it.
@@ -88,7 +93,7 @@ say so rather than to look reassuring:
 | **1** | **Bencode, metainfo, infohash** | **Done — computed infohashes match real `.torrent` files** |
 | **2** | **HTTP tracker announce** | **Done — a live peer list comes back** |
 | **3** | **One peer, one piece** | **Done — a single piece downloads and its SHA-1 verifies** |
-| 4 | Full download, multi-file, resume | An ISO's published SHA-256 matches |
+| **4** | **Full download, multi-file, resume** | **Done — an ISO's published SHA-256 matches** |
 | 5 | Piece picker, pipelining, many peers | Sustained throughput on a real swarm |
 | 6 | Seeding and choking | The local swarm test passes |
 | 7 | UDP trackers, magnet, `ut_metadata` | A magnet link downloads from scratch |
@@ -113,6 +118,14 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### Why the finished file is checked against somebody else's number
+
+Every piece is checked against a hash from the torrent file, so a download that
+completes is self-consistent by construction — which means it proves nothing on
+its own. The measurement that counts is the SHA-256 of the finished ISO against
+the one Debian publishes: made by someone else, about the same bytes, and
+nothing in this repository can influence it.
 
 ### Why nothing is trusted until it hashes
 
