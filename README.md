@@ -18,8 +18,9 @@ darker cells the ones in flight.
 
 ## Status
 
-Milestone 11 of 13. **It works, it has a window, and it runs, pauses and
-resumes more than one torrent.** A torrent is read —
+Milestone 12 of 13. **It works, it has a window, and it runs, pauses and
+resumes more than one torrent — downloading only the files you want.** A
+torrent is read —
 from a file, or from nothing but its hash by asking the swarm for its
 description — its trackers answer over HTTP or UDP, the DHT finds peers with no
 tracker at all, a few dozen peers are kept busy at once, pieces are picked
@@ -40,9 +41,13 @@ is told, and what has been downloaded stays where it is. Resuming picks it up
 again **without hashing a single byte**, and a torrent paused when the client
 closed comes back paused.
 
-Still to come: file priorities and the notification area.
+Files can be set aside or asked for sooner. A file marked *do not download* has
+its pieces skipped, and the torrent is finished when every piece it still wants
+is held — not when every piece is.
 
-**429 offline checks pass**, covering the bencode reader and writer, the
+Still to come: the notification area, settings and an about box.
+
+**448 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
 tracker reply arrives in, the peer handshake and every wire message, the piece
 picker, the DHT's distance arithmetic, routing table and messages, and writing
@@ -144,7 +149,7 @@ say so rather than to look reassuring:
 | **9** | **The window: piece map, peers, graphs, rate limits, UPnP** | **Done** |
 | **10** | **More than one torrent: add, remove, a list that survives a restart** | **Done** |
 | **11** | **Status and pause: checking, downloading, stalled, seeding, paused** | **Done — pausing keeps the progress and rehashes nothing** |
-| 12 | File priorities, including not downloading a file at all | A torrent is finished when every wanted piece is held |
+| **12** | **File priorities, including not downloading a file at all** | **Done — a torrent is finished when every wanted piece is held** |
 | 13 | Notification area, one instance, settings, about | — |
 
 ## Building
@@ -165,6 +170,22 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### Pieces and files do not line up
+
+A piece routinely spans two or three files, which is what makes file priorities
+more than a filter. A piece belonging to a file nobody wants and one somebody
+does is wanted, because the part that matters cannot be had without it; and a
+piece takes the highest priority of the files it touches, because the file that
+wants it most decides when it arrives.
+
+The same arithmetic means a file set aside is not always empty. Where it shares
+a boundary piece with a file that is wanted, part of it arrives anyway — so the
+file list says so, in as many words, rather than leaving somebody to find out.
+
+This is also where "complete" stops meaning "every piece". A torrent skipping
+half its files is finished at half its pieces, and a client that waited for the
+rest would never finish at all.
 
 ### What a tracker is told, and when
 

@@ -46,6 +46,7 @@ PeerProtocolTests.Run((name, pass, detail) => Check(name, pass, detail));
 StorageTests.Run((name, pass, detail) => Check(name, pass, detail));
 StoreTests.Run((name, pass, detail) => Check(name, pass, detail));
 PickerTests.Run((name, pass, detail) => Check(name, pass, detail));
+PriorityTests.Run((name, pass, detail) => Check(name, pass, detail));
 MagnetTests.Run((name, pass, detail) => Check(name, pass, detail));
 DhtTests.Run((name, pass, detail) => Check(name, pass, detail));
 SwarmTests.Run((name, pass, detail) => Check(name, pass, detail));

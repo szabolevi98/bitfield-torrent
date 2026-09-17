@@ -241,6 +241,13 @@ public sealed class Engine : IAsyncDisposable
         Changed?.Invoke();
     }
 
+    /// <summary>Changes what a torrent wants, file by file.</summary>
+    public void SetPriorities(InfoHash infoHash, IReadOnlyList<FilePriority> priorities)
+    {
+        Find(infoHash)?.SetPriorities(priorities);
+        Changed?.Invoke();
+    }
+
     public TorrentSession? Find(InfoHash infoHash) =>
         _torrents.TryGetValue(infoHash, out TorrentSession? session) ? session : null;
 

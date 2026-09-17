@@ -19,6 +19,9 @@ internal sealed class MainForm : Form
 
     private readonly TorrentListControl _list = new() { Dock = DockStyle.Fill };
     private readonly PieceMapControl _map = new() { Dock = DockStyle.Fill };
+    private readonly FileListControl _files = new() { Dock = DockStyle.Fill, Visible = false };
+    private Button? _piecesTab;
+    private Button? _filesTab;
     private readonly SpeedGraphControl _graph = new() { Dock = DockStyle.Top, Height = 140 };
     private readonly PeerListControl _peers = new() { Dock = DockStyle.Fill };
     private readonly StatsBar _stats = new() { Dock = DockStyle.Top };
@@ -108,7 +111,11 @@ internal sealed class MainForm : Form
         side.Controls.Add(_graph);
 
         Panel centre = new() { Dock = DockStyle.Fill, BackColor = Theme.Background };
+        centre.Controls.Add(_files);
         centre.Controls.Add(_map);
+        centre.Controls.Add(BuildTabs());
+
+        _files.PriorityChanged += (file, priority) => SetPriority(file, priority);
 
         Panel detail = new() { Dock = DockStyle.Fill, Padding = new Padding(12, 8, 12, 0), BackColor = Theme.Background };
         detail.Controls.Add(centre);
@@ -147,6 +154,75 @@ internal sealed class MainForm : Form
         Controls.Add(listHost);
         Controls.Add(BuildHeader());
         Controls.Add(BuildLog());
+    }
+
+    /// <summary>
+    /// Two views of the same torrent: the pieces as they arrive, and the files
+    /// they add up to. Tabs rather than both at once, because the piece map
+    /// wants the room.
+    /// </summary>
+    private Control BuildTabs()
+    {
+        Panel tabs = new() { Dock = DockStyle.Top, Height = 32, BackColor = Theme.Background };
+
+        _piecesTab = Tab("Pieces", 0, true);
+        _filesTab = Tab("Files", 86, false);
+
+        tabs.Controls.Add(_piecesTab);
+        tabs.Controls.Add(_filesTab);
+
+        return tabs;
+    }
+
+    private Button Tab(string text, int x, bool pieces)
+    {
+        Button tab = new()
+        {
+            Text = text,
+            Location = new Point(x, 0),
+            Size = new Size(82, 26),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = pieces ? Theme.Surface : Theme.Background,
+            ForeColor = pieces ? Theme.TextPrimary : Theme.TextMuted,
+            Font = Theme.UiFont,
+            Cursor = Cursors.Hand,
+        };
+
+        tab.FlatAppearance.BorderSize = 0;
+        tab.Click += (_, _) => ShowTab(pieces);
+
+        return tab;
+    }
+
+    private void ShowTab(bool pieces)
+    {
+        _map.Visible = pieces;
+        _files.Visible = !pieces;
+
+        if (_piecesTab != null)
+        {
+            _piecesTab.BackColor = pieces ? Theme.Surface : Theme.Background;
+            _piecesTab.ForeColor = pieces ? Theme.TextPrimary : Theme.TextMuted;
+        }
+
+        if (_filesTab != null)
+        {
+            _filesTab.BackColor = pieces ? Theme.Background : Theme.Surface;
+            _filesTab.ForeColor = pieces ? Theme.TextMuted : Theme.TextPrimary;
+        }
+    }
+
+    private void SetPriority(int file, FilePriority priority)
+    {
+        if (_list.Selected is not { } selected || _engine.Find(selected) is not { } session)
+        {
+            return;
+        }
+
+        List<FilePriority> priorities = [.. session.Priorities.Files];
+        priorities[file] = priority;
+
+        _engine.SetPriorities(selected, priorities);
     }
 
     private Control BuildHeader()
@@ -581,6 +657,7 @@ internal sealed class MainForm : Form
         if (session == null)
         {
             _map.Clear();
+            _files.Clear();
             _peers.Set([]);
             _stats.Set(
                 ("torrents", $"{_engine.Torrents.Count}", Theme.TextSecondary),
@@ -603,6 +680,7 @@ internal sealed class MainForm : Form
             }
 
             _peers.Set([]);
+            ShowFiles(session);
 
             _stats.Set(
                 session.Paused
@@ -637,6 +715,8 @@ internal sealed class MainForm : Form
             ("remaining", eta, Theme.TextSecondary),
             ("bad pieces", $"{progress.FailedPieces:N0}", progress.FailedPieces > 0 ? Theme.Warning : Theme.TextMuted));
 
+        ShowFiles(session);
+
         _peers.Set(download.Peers().Select(peer => new PeerRow(
             peer.RemoteEndPoint.ToString(),
             peer.ClientName,
@@ -649,6 +729,39 @@ internal sealed class MainForm : Form
     }
 
     // ------------------------------------------------------------------ the rest
+
+    private void ShowFiles(TorrentSession session)
+    {
+        List<FileRow> rows = [];
+
+        for (int i = 0; i < session.Torrent.Files.Count; i++)
+        {
+            Core.Torrents.TorrentFile file = session.Torrent.Files[i];
+
+            if (file.IsPadding)
+            {
+                // Padding is not something anybody chose to download, and
+                // showing it would only invite somebody to set it aside.
+                continue;
+            }
+
+            // Every path starts with the torrent's own folder, which is the
+            // same for every row and eats the width that tells them apart.
+            string path = file.Path.StartsWith(session.Torrent.Name + '/', StringComparison.Ordinal)
+                ? file.Path[(session.Torrent.Name.Length + 1)..]
+                : file.Path;
+
+            rows.Add(new FileRow(
+                i,
+                path,
+                file.Length,
+                session.FileFraction(i),
+                session.Priorities.Files[i],
+                session.Priorities.SharesPieces(i)));
+        }
+
+        _files.Set(rows);
+    }
 
     private void Note(string text)
     {

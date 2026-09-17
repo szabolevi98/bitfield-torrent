@@ -84,6 +84,7 @@ public sealed class TorrentSession : IAsyncDisposable
         _services = services;
         _note = note;
         _run = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+        Priorities = new PiecePriorities(torrent, state.Priorities.Count == torrent.Files.Count ? state.Priorities : null);
     }
 
     public Metainfo Torrent { get; }
@@ -148,9 +149,117 @@ public sealed class TorrentSession : IAsyncDisposable
 
     public int PieceCount => Torrent.PieceCount;
 
-    public double Fraction => IsChecking
-        ? CheckedFraction
-        : Have is { } have ? have.SetCount / (double)Torrent.PieceCount : 0;
+    /// <summary>What is wanted of this torrent, and how much of each file.</summary>
+    public PiecePriorities Priorities { get; private set; }
+
+    /// <summary>
+    /// How much of what is wanted is held. A torrent skipping half its files is
+    /// finished at half its pieces, so progress is out of the wanted ones — out
+    /// of every piece it would never reach 100% and would look stuck forever.
+    /// </summary>
+    public double Fraction
+    {
+        get
+        {
+            if (IsChecking)
+            {
+                return CheckedFraction;
+            }
+
+            if (Download is { } download)
+            {
+                return download.Snapshot().Fraction;
+            }
+
+            if (Have is not { } have)
+            {
+                return 0;
+            }
+
+            int wanted = 0;
+            int held = 0;
+
+            for (int piece = 0; piece < Torrent.PieceCount; piece++)
+            {
+                if (!Priorities.Wanted(piece))
+                {
+                    continue;
+                }
+
+                wanted++;
+                held += have[piece] ? 1 : 0;
+            }
+
+            return wanted == 0 ? 1 : held / (double)wanted;
+        }
+    }
+
+    /// <summary>
+    /// How much of one file is held, by the bytes of it that fall in pieces
+    /// this client has. Counted by overlap rather than by whole pieces, because
+    /// a file smaller than a piece would otherwise be either nothing or
+    /// everything.
+    /// </summary>
+    public double FileFraction(int file)
+    {
+        TorrentFile entry = Torrent.Files[file];
+
+        if (entry.Length == 0)
+        {
+            return 1;
+        }
+
+        if (Have is not { } have)
+        {
+            return 0;
+        }
+
+        long held = 0;
+        int first = (int)(entry.Offset / Torrent.PieceLength);
+        int last = (int)((entry.End - 1) / Torrent.PieceLength);
+
+        for (int piece = first; piece <= last && piece < Torrent.PieceCount; piece++)
+        {
+            if (!have[piece])
+            {
+                continue;
+            }
+
+            long pieceStart = (long)piece * Torrent.PieceLength;
+            long pieceEnd = pieceStart + Torrent.PieceLengthAt(piece);
+
+            held += Math.Max(0, Math.Min(pieceEnd, entry.End) - Math.Max(pieceStart, entry.Offset));
+        }
+
+        return held / (double)entry.Length;
+    }
+
+    /// <summary>
+    /// Changes what is wanted. Takes effect on the next piece handed out;
+    /// anything already in flight finishes, because a block half fetched is
+    /// cheaper to keep than to throw away.
+    /// </summary>
+    public void SetPriorities(IReadOnlyList<FilePriority> priorities)
+    {
+        Priorities = new PiecePriorities(Torrent, priorities);
+        State = State with { Priorities = priorities };
+
+        if (Download is { } download)
+        {
+            download.Priorities = Priorities;
+        }
+
+        try
+        {
+            _store.SaveState(InfoHash, State);
+        }
+        catch (IOException e)
+        {
+            _note?.Invoke($"{Name}: the priorities could not be saved — {e.Message}");
+        }
+
+        _note?.Invoke($"{Name}: {Priorities.WantedCount} of {Torrent.PieceCount} pieces wanted");
+    }
 
     public static TorrentSession Open(
         Metainfo torrent,
@@ -290,7 +399,7 @@ public sealed class TorrentSession : IAsyncDisposable
                 }
             }
 
-            download = new TorrentDownload(Torrent, Storage, _have, _services.PeerId, resumePath)
+            download = new TorrentDownload(Torrent, Storage, _have, _services.PeerId, resumePath, Priorities)
             {
                 KeepSeeding = true,
                 Dht = _services.Dht,

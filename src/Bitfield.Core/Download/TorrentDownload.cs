@@ -26,6 +26,16 @@ public sealed record DownloadProgress
 
     public int FailedPieces { get; init; }
 
+    /// <summary>
+    /// Pieces this torrent actually wants, and how many of them are held. With
+    /// a file set aside these are not the same as the totals, and progress is
+    /// out of what is wanted — a torrent skipping half its files is finished at
+    /// half its pieces.
+    /// </summary>
+    public int WantedPieces { get; init; }
+
+    public int WantedHeld { get; init; }
+
     /// <summary>Connected peers that hold the whole torrent themselves.</summary>
     public int SeedPeers { get; init; }
 
@@ -45,7 +55,7 @@ public sealed record DownloadProgress
     /// </summary>
     public int MostRequestsInFlight { get; init; }
 
-    public double Fraction => PieceCount == 0 ? 0 : PiecesHeld / (double)PieceCount;
+    public double Fraction => WantedPieces == 0 ? 1 : WantedHeld / (double)WantedPieces;
 }
 
 /// <summary>
@@ -80,14 +90,15 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
         TorrentStorage storage,
         PieceBitfield have,
         PeerId peerId,
-        string? resumePath = null)
+        string? resumePath = null,
+        PiecePriorities? priorities = null)
     {
         _torrent = torrent;
         _storage = storage;
-        _picker = new PiecePicker(have);
+        _picker = new PiecePicker(have, priorities: priorities);
         _peerId = peerId;
         _resumePath = resumePath;
-        _startedComplete = have.IsComplete;
+        _startedComplete = _picker.IsComplete;
     }
 
     /// <summary>How many connections to keep open at once.</summary>
@@ -156,6 +167,17 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     public long Uploaded =>
         Interlocked.Read(ref _uploadedByClosedPeers) + _sessions.Values.Sum(session => session.Uploaded);
 
+    /// <summary>
+    /// Which files are wanted and how much. Changing it takes effect on the
+    /// next piece the picker hands out; anything already in flight finishes,
+    /// because a block half fetched is cheaper to keep than to throw away.
+    /// </summary>
+    public PiecePriorities? Priorities
+    {
+        get => _picker.Priorities;
+        set => _picker.Priorities = value;
+    }
+
     /// <summary>How many peers are connected, without building a whole snapshot.</summary>
     public int ConnectedPeerCount => _sessions.Count;
 
@@ -177,6 +199,8 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
         ConnectedPeers = _sessions.Count,
         BytesPerSecond = Downloaded / Math.Max(_clock.Elapsed.TotalSeconds, 0.001),
         FailedPieces = _failedPieces,
+        WantedPieces = _picker.WantedCount,
+        WantedHeld = _picker.WantedHeld,
         SeedPeers = _sessions.Values.Count(s => s.State.Available.IsComplete),
         InterestedPeers = _sessions.Values.Count(s => s.State.PeerInterested),
         UnchokedPeers = _sessions.Values.Count(s => !s.State.ChokingPeer),

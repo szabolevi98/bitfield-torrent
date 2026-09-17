@@ -37,37 +37,110 @@ public sealed class PiecePicker
     private readonly int[] _availability;
     private readonly Random _random;
 
-    public PiecePicker(PieceBitfield have, Random? random = null)
+    private PiecePriorities? _priorities;
+
+    public PiecePicker(PieceBitfield have, Random? random = null, PiecePriorities? priorities = null)
     {
         Have = have;
         PieceCount = have.PieceCount;
         _availability = new int[PieceCount];
         _random = random ?? Random.Shared;
+        _priorities = priorities;
+    }
+
+    /// <summary>
+    /// Which pieces are wanted and how much, or null when every piece is wanted
+    /// equally. Replaced rather than edited, so a change takes effect whole.
+    /// </summary>
+    public PiecePriorities? Priorities
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _priorities;
+            }
+        }
+
+        set
+        {
+            lock (_gate)
+            {
+                _priorities = value;
+            }
+        }
     }
 
     public PieceBitfield Have { get; }
 
     public int PieceCount { get; }
 
+    /// <summary>
+    /// Whether everything wanted is held — which, for a torrent with a file set
+    /// aside, is not the same as holding every piece. A client that waited for
+    /// the rest would never finish at all.
+    /// </summary>
     public bool IsComplete
     {
         get
         {
             lock (_gate)
             {
-                return Have.IsComplete;
+                if (_priorities is not { } priorities || priorities.WantsEverything)
+                {
+                    return Have.IsComplete;
+                }
+
+                for (int piece = 0; piece < PieceCount; piece++)
+                {
+                    if (priorities.Wanted(piece) && !Have[piece])
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
             }
         }
     }
 
-    public int Remaining
+    /// <summary>How many wanted pieces are still missing.</summary>
+    public int Remaining => Count(held: false);
+
+    /// <summary>How many wanted pieces are held, which is what progress is out of.</summary>
+    public int WantedHeld => Count(held: true);
+
+    /// <summary>How many pieces are wanted at all.</summary>
+    public int WantedCount
     {
         get
         {
             lock (_gate)
             {
-                return PieceCount - Have.SetCount;
+                return _priorities?.WantedCount ?? PieceCount;
             }
+        }
+    }
+
+    private int Count(bool held)
+    {
+        lock (_gate)
+        {
+            if (_priorities is not { } priorities || priorities.WantsEverything)
+            {
+                return held ? Have.SetCount : PieceCount - Have.SetCount;
+            }
+
+            int total = 0;
+            for (int piece = 0; piece < PieceCount; piece++)
+            {
+                if (priorities.Wanted(piece) && Have[piece] == held)
+                {
+                    total++;
+                }
+            }
+
+            return total;
         }
     }
 
@@ -130,16 +203,24 @@ public sealed class PiecePicker
     {
         lock (_gate)
         {
-            bool endgame = PieceCount - Have.SetCount <= EndgameThreshold;
+            bool endgame = Remaining <= EndgameThreshold;
             bool rarestFirst = Have.SetCount >= RandomFirstPieces;
 
             int chosen = -1;
+            FilePriority best = FilePriority.Skip;
             int rarest = int.MaxValue;
             int ties = 0;
 
             for (int piece = 0; piece < PieceCount; piece++)
             {
                 if (Have[piece] || !available[piece])
+                {
+                    continue;
+                }
+
+                // A piece nobody wants is never asked for, however rare it is.
+                FilePriority priority = _priorities?.PriorityOf(piece) ?? FilePriority.Normal;
+                if (priority == FilePriority.Skip)
                 {
                     continue;
                 }
@@ -151,13 +232,17 @@ public sealed class PiecePicker
 
                 int rarity = rarestFirst ? _availability[piece] : 0;
 
-                if (rarity < rarest)
+                // Priority first, rarity second. A file marked high is wanted
+                // sooner even where its pieces are common, which is the whole
+                // point of having said so.
+                if (priority > best || (priority == best && rarity < rarest))
                 {
+                    best = priority;
                     rarest = rarity;
                     chosen = piece;
                     ties = 1;
                 }
-                else if (rarity == rarest)
+                else if (priority == best && rarity == rarest)
                 {
                     // Reservoir sampling over the ties, so that equally rare
                     // pieces — and, before rarest first starts, every piece —

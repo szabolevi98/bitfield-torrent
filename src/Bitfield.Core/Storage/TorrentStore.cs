@@ -16,6 +16,14 @@ public sealed record TorrentState
     /// again when the client restarts is the client overruling the user.
     /// </summary>
     public bool Paused { get; init; }
+
+    /// <summary>
+    /// One byte per file, or empty when every file is wanted normally. Stored
+    /// as bytes rather than a list of integers because a torrent may hold tens
+    /// of thousands of files and the state file is rewritten every time one of
+    /// them changes.
+    /// </summary>
+    public IReadOnlyList<Download.FilePriority> Priorities { get; init; } = [];
 }
 
 /// <summary>A torrent read back from the store on startup.</summary>
@@ -67,6 +75,7 @@ public sealed class TorrentStore
         BDictionary saved = Dictionary(
             ("added", new BInteger(state.AddedOn.ToUnixTimeSeconds())),
             ("paused", new BInteger(state.Paused ? 1 : 0)),
+            ("priorities", new BString(state.Priorities.Select(priority => (byte)priority).ToArray())),
             ("save path", new BString(state.SavePath)),
             ("version", new BInteger(1)));
 
@@ -78,6 +87,7 @@ public sealed class TorrentStore
         BDictionary saved = Dictionary(
             ("added", new BInteger(state.AddedOn.ToUnixTimeSeconds())),
             ("paused", new BInteger(state.Paused ? 1 : 0)),
+            ("priorities", new BString(state.Priorities.Select(priority => (byte)priority).ToArray())),
             ("save path", new BString(state.SavePath)),
             ("version", new BInteger(1)));
 
@@ -118,6 +128,7 @@ public sealed class TorrentStore
                     SavePath = savePath,
                     AddedOn = DateTimeOffset.FromUnixTimeSeconds(state.GetInteger("added") ?? 0),
                     Paused = state.GetInteger("paused") == 1,
+                    Priorities = ReadPriorities(state, torrent.Files.Count),
                 }));
             }
             catch (Exception e) when (e is MetainfoException or BencodeException or IOException)
@@ -127,6 +138,31 @@ public sealed class TorrentStore
         }
 
         return [.. loaded.OrderBy(entry => entry.State.AddedOn)];
+    }
+
+    /// <summary>
+    /// The saved priorities, or none at all when they do not match the torrent
+    /// — a file list that has changed length means the two do not belong
+    /// together, and treating every file as normal is the safe answer.
+    /// </summary>
+    private static IReadOnlyList<Download.FilePriority> ReadPriorities(BDictionary state, int fileCount)
+    {
+        if (state.GetByteString("priorities") is not { } stored || stored.Length != fileCount)
+        {
+            return [];
+        }
+
+        Download.FilePriority[] priorities = new Download.FilePriority[fileCount];
+
+        for (int i = 0; i < fileCount; i++)
+        {
+            byte value = stored.Span[i];
+            priorities[i] = value <= (byte)Download.FilePriority.High
+                ? (Download.FilePriority)value
+                : Download.FilePriority.Normal;
+        }
+
+        return priorities;
     }
 
     public void Remove(InfoHash infoHash)
