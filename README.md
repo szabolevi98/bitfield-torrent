@@ -9,9 +9,15 @@ which pieces it already has. It is also what the window is built around — the
 piece map in the middle of the screen is a bitfield drawn out, filling in as the
 download proceeds.
 
+![Bitfield Torrent downloading a Debian ISO](docs/screenshot.png)
+
+A third of the way into the Debian netinst ISO at 17.3 MB/s across 25 peers. The
+speckle is what rarest first looks like: pieces arriving from all over the
+torrent rather than in order, with the darker cells the ones in flight.
+
 ## Status
 
-Milestone 8 of 9. **Everything under the window works.** A torrent is read —
+Milestone 9 of 9, most of the way. **It works and it has a window.** A torrent is read —
 from a file, or from nothing but its hash by asking the swarm for its
 description — its trackers answer over HTTP or UDP, the DHT finds peers with no
 tracker at all, a few dozen peers are kept busy at once, pieces are picked
@@ -20,7 +26,9 @@ straddles. An interrupted download picks up where it left off. Peers that
 connect are answered, blocks are served from disk, and the choking algorithm
 decides which few are worth answering.
 
-What is left is the window, which opens and is empty.
+The window shows the piece map, the peers and the last two minutes of
+throughput, and opens a torrent or a magnet link. Still missing from this last
+milestone: rate limits and the UPnP port mapping.
 
 **399 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a

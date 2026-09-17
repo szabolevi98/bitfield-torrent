@@ -134,6 +134,12 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     public long Uploaded =>
         Interlocked.Read(ref _uploadedByClosedPeers) + _sessions.Values.Sum(session => session.Uploaded);
 
+    /// <summary>The pieces being fetched right now, for the piece map to show.</summary>
+    public int[] PiecesInProgress() => _picker.InProgress();
+
+    /// <summary>The peers currently connected, for the peer list to show.</summary>
+    public IReadOnlyList<PeerSession> Peers() => [.. _sessions.Values];
+
     /// <summary>Adds a peer found somewhere other than a tracker.</summary>
     public void AddPeer(IPEndPoint peer) => _known.TryAdd(peer, 0);
 

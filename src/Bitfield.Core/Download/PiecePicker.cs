@@ -200,6 +200,19 @@ public sealed class PiecePicker
         }
     }
 
+    /// <summary>
+    /// The pieces currently being fetched from somebody. The piece map draws
+    /// them differently from the ones still untouched, which is most of what
+    /// makes it look alive.
+    /// </summary>
+    public int[] InProgress()
+    {
+        lock (_gate)
+        {
+            return [.. _inProgress];
+        }
+    }
+
     public bool Wants(int piece)
     {
         lock (_gate)
