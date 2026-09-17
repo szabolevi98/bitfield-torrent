@@ -21,11 +21,23 @@ public interface IPieceReceiver
 public sealed class PeerSession
 {
     /// <summary>
-    /// Blocks outstanding at once. Sixteen is a quarter of a megabyte in
-    /// flight, which keeps a connection busy across an ordinary round trip
-    /// without asking a peer to hold more than it will.
+    /// How many blocks to keep outstanding, at the least and at the most. The
+    /// floor keeps a connection that has not proved anything yet from going
+    /// idle for a round trip after every block; the ceiling keeps a fast peer
+    /// from being asked to hold two megabytes of requests, which some will
+    /// refuse and others will answer slowly.
     /// </summary>
-    private const int RequestsInFlight = 16;
+    private const int MinRequestsInFlight = 4;
+
+    private const int MaxRequestsInFlight = 96;
+
+    /// <summary>
+    /// How much of a second's worth of blocks to keep in flight. Requesting
+    /// exactly one second's worth means the pipeline empties whenever the peer
+    /// speeds up; half again as much absorbs that without asking for more than
+    /// the peer can send before the requests go stale.
+    /// </summary>
+    private const double SecondsInFlight = 0.5;
 
     private static readonly TimeSpan MessageTimeout = TimeSpan.FromSeconds(30);
 
@@ -36,9 +48,12 @@ public sealed class PeerSession
     private readonly PeerState _state;
 
     private readonly HashSet<int> _requested = [];
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
 
     private PieceAssembler? _piece;
     private int _outstanding;
+    private long _blockBytes;
+    private bool _counted;
 
     public PeerSession(
         PeerConnection connection,
@@ -59,6 +74,20 @@ public sealed class PeerSession
 
     /// <summary>Bytes of verified piece data this peer contributed.</summary>
     public long Downloaded { get; private set; }
+
+    /// <summary>Blocks arriving per second, whether or not their pieces verified.</summary>
+    public double BytesPerSecond => _blockBytes / Math.Max(_clock.Elapsed.TotalSeconds, 0.001);
+
+    /// <summary>
+    /// How many requests this peer is worth keeping outstanding, from what it
+    /// has actually delivered. A peer sending 4 MB/s is asked for far more at
+    /// once than one sending 40 KB/s, and neither number has to be guessed at
+    /// or configured.
+    /// </summary>
+    public int RequestsInFlight => Math.Clamp(
+        (int)(BytesPerSecond * SecondsInFlight / BlockRequest.BlockSize),
+        MinRequestsInFlight,
+        MaxRequestsInFlight);
 
     public PeerState State => _state;
 
@@ -106,13 +135,48 @@ public sealed class PeerSession
                 _picker.Release(_piece.Index);
                 _piece = null;
             }
+
+            // And this peer's pieces stop counting towards how rare anything
+            // is, now that it is no longer somewhere to get them.
+            if (_counted)
+            {
+                _picker.RemoveAvailability(_state.Available);
+                _counted = false;
+            }
         }
     }
 
     private async Task HandleAsync(PeerMessage message, CancellationToken cancellationToken)
     {
+        // Rarest first is only as good as its counts, so every claim a peer
+        // makes about what it holds goes into them as it arrives — but only
+        // once. A peer repeating a piece it already announced in its bitfield
+        // would otherwise be counted twice and taken away once, and the piece
+        // would look commoner than it is for as long as the client runs.
+        if (message.Id == MessageId.Have)
+        {
+            int announced = message.ReadHave();
+            bool alreadyKnown = (uint)announced < (uint)_torrent.PieceCount && _state.Available[announced];
+
+            _state.Apply(message);
+
+            if (!alreadyKnown)
+            {
+                _picker.AddAvailability(announced);
+                _counted = true;
+            }
+
+            return;
+        }
+
         if (_state.Apply(message))
         {
+            if (message.Id == MessageId.Bitfield)
+            {
+                _picker.AddAvailability(_state.Available);
+                _counted = true;
+            }
+
             // Being choked cancels every outstanding request at the far end, so
             // the piece has to be started over and given back in the meantime.
             if (message.Id == MessageId.Choke && _piece != null)
@@ -133,6 +197,7 @@ public sealed class PeerSession
 
         (int index, int begin, ReadOnlyMemory<byte> block) = message.ReadPiece();
         _outstanding = Math.Max(0, _outstanding - 1);
+        _blockBytes += block.Length;
 
         if (_piece == null || index != _piece.Index || !_piece.Add(begin, block.Span))
         {
@@ -186,7 +251,8 @@ public sealed class PeerSession
         // requests rather than counting them matters because blocks come back
         // in whatever order the peer sends them, and anything derived from the
         // order would either ask twice or never ask at all.
-        for (int block = 0; block < _piece.BlockCount && _outstanding < RequestsInFlight; block++)
+        int wanted = RequestsInFlight;
+        for (int block = 0; block < _piece.BlockCount && _outstanding < wanted; block++)
         {
             if (_piece.HasBlock(block) || !_requested.Add(block))
             {

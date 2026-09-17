@@ -25,6 +25,16 @@ public sealed record DownloadProgress
 
     public int FailedPieces { get; init; }
 
+    /// <summary>The fastest single peer, in bytes per second.</summary>
+    public double FastestPeer { get; init; }
+
+    /// <summary>
+    /// The most blocks any one peer is being kept waiting on. It rises with
+    /// what peers actually deliver, so seeing it above the floor of four is
+    /// what adaptive pipelining looks like from outside.
+    /// </summary>
+    public int MostRequestsInFlight { get; init; }
+
     public double Fraction => PieceCount == 0 ? 0 : PiecesHeld / (double)PieceCount;
 }
 
@@ -88,6 +98,8 @@ public sealed class TorrentDownload : IPieceReceiver
         ConnectedPeers = _sessions.Count,
         BytesPerSecond = Downloaded / Math.Max(_clock.Elapsed.TotalSeconds, 0.001),
         FailedPieces = _failedPieces,
+        FastestPeer = _sessions.IsEmpty ? 0 : _sessions.Values.Max(s => s.BytesPerSecond),
+        MostRequestsInFlight = _sessions.IsEmpty ? 0 : _sessions.Values.Max(s => s.RequestsInFlight),
     };
 
     public async Task RunAsync(CancellationToken cancellationToken)

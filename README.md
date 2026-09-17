@@ -11,13 +11,13 @@ download proceeds.
 
 ## Status
 
-Milestone 4 of 9. **It downloads.** A torrent is read, its tracker answers, a
-few dozen peers are kept busy at once, and every piece that verifies is written
-across the files it straddles. An interrupted download picks up where it left
-off. Nothing is uploaded yet, pieces are picked in order rather than rarest
-first, and the window opens and is empty.
+Milestone 5 of 9. **It downloads.** A torrent is read, its tracker answers, a
+few dozen peers are kept busy at once, pieces are picked rarest first, and
+every piece that verifies is written across the files it straddles. An
+interrupted download picks up where it left off. Nothing is uploaded yet, and
+the window opens and is empty.
 
-**315 offline checks pass**, covering the bencode reader and writer, the
+**326 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
 tracker reply arrives in, the peer handshake and every wire message, the piece
 picker, and writing pieces across file boundaries — plus three real torrent
@@ -28,12 +28,13 @@ Against the live swarm, on 2026-09-17:
 
 | What | Result |
 |---|---|
-| **The Debian 13.7 netinst ISO, start to finish** | **792,723,456 bytes in 48.0 s — 15.75 MB/s average, 22.4 MB/s peak, 28 peers, no piece failed its hash** |
+| **The Debian 13.7 netinst ISO, start to finish** | **792,723,456 bytes in 49.1 s — 15.39 MB/s average, 28 peers, no piece failed its hash** |
 | **Its SHA-256 against Debian's published `SHA256SUMS`** | **`a7ef94ac…e355` — matches** |
 | Resuming after 12 pieces were damaged | hashing found exactly those 12 in 2.6 s, re-fetched 3,145,728 bytes — 12 pieces to the byte — and the checksum matched again |
 | `bttracker.debian.org` (HTTP) | answered in 190 ms with 50 peers |
 | `torrent.ubuntu.com` (HTTPS) | answered in 348 ms, 1,608 seeders reported |
 | Piece 0 from a qBittorrent 5.1.0 peer / an rqbit 8.1.1 peer | SHA-1 verified in 1,122 ms / 351 ms |
+| The same ISO over HTTP from Debian's mirror, one stream, for comparison | 18.32 MB/s |
 
 ```
 dotnet run --project tests/Bitfield.Tests -- announce [path to a .torrent]
@@ -94,7 +95,7 @@ say so rather than to look reassuring:
 | **2** | **HTTP tracker announce** | **Done — a live peer list comes back** |
 | **3** | **One peer, one piece** | **Done — a single piece downloads and its SHA-1 verifies** |
 | **4** | **Full download, multi-file, resume** | **Done — an ISO's published SHA-256 matches** |
-| 5 | Piece picker, pipelining, many peers | Sustained throughput on a real swarm |
+| **5** | **Piece picker, pipelining, many peers** | **Done — sustained throughput on a real swarm** |
 | 6 | Seeding and choking | The local swarm test passes |
 | 7 | UDP trackers, magnet, `ut_metadata` | A magnet link downloads from scratch |
 | 8 | DHT | Peers found with no tracker involved |
@@ -118,6 +119,23 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### What rarest first did and did not do
+
+Rarest first and adaptive pipelining went in expecting the download to get
+faster. It did not: 49.1 s against the 48.0 s the same ISO took when pieces
+were picked in order with a fixed sixteen requests outstanding. The same file
+over HTTP from Debian's own mirror, one stream, comes down at 18.32 MB/s, and
+this client reaches about 85% of that — so what limits it is the line, not the
+order the pieces are asked for.
+
+The change is doing its job; it is simply not the thing in the way. Adaptive
+pipelining is visible in the run: the fastest peer of that download was being
+kept waiting on 73 blocks at once, against the flat sixteen it would have had
+before. And rarest first earns its place for a different reason than speed — it
+stops a torrent needing, at 99%, a piece only one departed peer ever had, and
+it is what spreads a new piece through a swarm instead of everyone queueing at
+the same seed. Neither shows up in the time to fetch a well-seeded Debian ISO.
 
 ### Why the finished file is checked against somebody else's number
 

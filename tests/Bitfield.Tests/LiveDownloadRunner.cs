@@ -125,6 +125,8 @@ internal static class LiveDownloadRunner
                 + $"{progress.PiecesHeld:N0}/{progress.PieceCount:N0} pieces  "
                 + $"{rate / (1024 * 1024),6:N2} MB/s  "
                 + $"{progress.ConnectedPeers,3} peers  "
+                + $"best {progress.FastestPeer / (1024 * 1024),5:N2} MB/s  "
+                + $"{progress.MostRequestsInFlight,3} in flight  "
                 + $"{progress.FailedPieces} bad ");
         };
 
