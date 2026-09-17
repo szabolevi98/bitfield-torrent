@@ -48,6 +48,7 @@ internal sealed class MainForm : Form
         _directoryOnStart = directory;
 
         Text = "Bitfield Torrent";
+        Icon = LoadIcon();
         ClientSize = new Size(1180, 760);
         MinimumSize = new Size(900, 560);
         StartPosition = FormStartPosition.CenterScreen;
@@ -66,6 +67,18 @@ internal sealed class MainForm : Form
             OpenFromCommandLine();
         };
         FormClosing += (_, _) => Shutdown();
+    }
+
+    /// <summary>
+    /// The window's own icon, which is what the title bar and the taskbar show.
+    /// Setting the executable's icon is a separate thing and does not reach
+    /// either of them — a form without this keeps the default one Windows Forms
+    /// supplies, whatever the exe looks like in Explorer.
+    /// </summary>
+    private static Icon? LoadIcon()
+    {
+        using Stream? stream = typeof(MainForm).Assembly.GetManifestResourceStream("Bitfield.app.ico");
+        return stream == null ? null : new Icon(stream);
     }
 
     private void BuildLayout()

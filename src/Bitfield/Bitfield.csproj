@@ -10,6 +10,7 @@
     <RootNamespace>Bitfield</RootNamespace>
     <AssemblyName>Bitfield</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Resources\app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationUseCompatibleTextRendering>false</ApplicationUseCompatibleTextRendering>
     <Platforms>AnyCPU;x64</Platforms>
@@ -23,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Bitfield.Core\Bitfield.Core.csproj" />
+    <EmbeddedResource Include="Resources\app.ico" LogicalName="Bitfield.app.ico" />
   </ItemGroup>
 
 </Project>
