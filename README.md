@@ -11,25 +11,29 @@ download proceeds.
 
 ## Status
 
-Milestone 2 of 9. Torrent files are read and identified correctly, and real
-trackers answer with real peers. Nothing is transferred yet — no peer has been
-connected to. The window opens and is empty.
+Milestone 3 of 9. Torrent files are read and identified, trackers answer with
+real peers, and content crosses the network: a piece downloaded from a stranger
+and checked against the torrent's own hash. Nothing is written to disk yet, and
+only one piece is fetched at a time. The window opens and is empty.
 
-**196 offline checks pass**, covering the bencode reader and writer, the
+**270 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
-tracker reply arrives in, and three real torrent files whose infohashes, piece
-counts and lengths are matched against values derived with a separate
-implementation.
+tracker reply arrives in, the peer handshake and every wire message, and three
+real torrent files whose infohashes, piece counts and lengths are matched
+against values derived with a separate implementation.
 
-Announcing for real, on 2026-09-17:
+Against the live swarm, on 2026-09-17:
 
-| Tracker | Answered in | Reported | Peers |
-|---|---:|---|---:|
-| `bttracker.debian.org` (HTTP) | 190 ms | swarm sizes not reported | 50 |
-| `torrent.ubuntu.com` (HTTPS) | 348 ms | 1,608 seeders, 31 leechers | 1 |
+| What | Result |
+|---|---|
+| `bttracker.debian.org` (HTTP) | answered in 190 ms with 50 peers |
+| `torrent.ubuntu.com` (HTTPS) | answered in 348 ms, 1,608 seeders reported |
+| Piece 0 of the Debian ISO from a qBittorrent 5.1.0 peer | 262,144 bytes in 16 blocks, **SHA-1 verified**, 1,122 ms |
+| The same piece from an rqbit 8.1.1 peer | **SHA-1 verified**, 351 ms |
 
 ```
 dotnet run --project tests/Bitfield.Tests -- announce [path to a .torrent]
+dotnet run --project tests/Bitfield.Tests -- piece    [path to a .torrent]
 ```
 
 Nothing below is claimed as working until it has a measurement beside it.
@@ -83,7 +87,7 @@ say so rather than to look reassuring:
 |---|---|---|
 | **1** | **Bencode, metainfo, infohash** | **Done — computed infohashes match real `.torrent` files** |
 | **2** | **HTTP tracker announce** | **Done — a live peer list comes back** |
-| 3 | One peer, one piece | A single piece downloads and its SHA-1 verifies |
+| **3** | **One peer, one piece** | **Done — a single piece downloads and its SHA-1 verifies** |
 | 4 | Full download, multi-file, resume | An ISO's published SHA-256 matches |
 | 5 | Piece picker, pipelining, many peers | Sustained throughput on a real swarm |
 | 6 | Seeding and choking | The local swarm test passes |
@@ -109,6 +113,19 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### Why nothing is trusted until it hashes
+
+Any peer can send any bytes. The torrent file carries a SHA-1 for every piece,
+and a piece whose hash does not match is thrown away rather than written — that
+check is the only thing between a swarm of strangers and the file on disk, and
+it is the reason a download from people nobody vouches for can be relied on at
+all.
+
+It is worth being clear about which risk this covers. The hashes come from the
+torrent file, so they are only as trustworthy as wherever that came from; what
+they guarantee is that the bytes assembled here are the bytes that torrent
+describes, whoever sent them and however many peers they came from.
 
 ### Why the announce URL is built by hand
 

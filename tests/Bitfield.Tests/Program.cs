@@ -9,7 +9,7 @@ using Bitfield.Tests;
 // part of the build's own checks.
 if (args.Length > 0)
 {
-    return LiveTrackerRunner.Run(args);
+    return args[0] == "piece" ? LivePieceRunner.Run(args) : LiveTrackerRunner.Run(args);
 }
 
 int failures = 0;
@@ -33,6 +33,7 @@ BencodeTests.Run((name, pass, detail) => Check(name, pass, detail));
 MetainfoTests.Run((name, pass, detail) => Check(name, pass, detail));
 TorrentFileTests.Run((name, pass, detail) => Check(name, pass, detail));
 TrackerTests.Run((name, pass, detail) => Check(name, pass, detail));
+PeerProtocolTests.Run((name, pass, detail) => Check(name, pass, detail));
 
 Console.WriteLine();
 Console.WriteLine($"{total - failures}/{total} checks passed.");

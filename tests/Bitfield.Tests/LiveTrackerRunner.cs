@@ -22,7 +22,7 @@ internal static class LiveTrackerRunner
     {
         if (args[0] != "announce")
         {
-            Console.Error.WriteLine($"unknown runner \"{args[0]}\"; the only one is \"announce\"");
+            Console.Error.WriteLine($"unknown runner \"{args[0]}\"; the runners are \"announce\" and \"piece\"");
             return 2;
         }
 
