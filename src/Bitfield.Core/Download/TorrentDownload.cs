@@ -142,7 +142,7 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        using HttpTrackerClient tracker = new();
+        using TrackerClient tracker = new();
         TrackerTiers tiers = new(_torrent.AnnounceTiers);
 
         using CancellationTokenSource finished = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -188,7 +188,7 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     /// again. Announcing more often than a tracker allows is how a client gets
     /// itself banned, so the interval it sends is obeyed.
     /// </summary>
-    private async Task AnnounceLoopAsync(HttpTrackerClient tracker, TrackerTiers tiers, CancellationToken cancellationToken)
+    private async Task AnnounceLoopAsync(TrackerClient tracker, TrackerTiers tiers, CancellationToken cancellationToken)
     {
         TrackerEvent next = TrackerEvent.Started;
 
@@ -509,7 +509,7 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     }
 
     private async Task TellTrackerAsync(
-        HttpTrackerClient tracker,
+        TrackerClient tracker,
         TrackerTiers tiers,
         TrackerEvent what,
         CancellationToken cancellationToken)

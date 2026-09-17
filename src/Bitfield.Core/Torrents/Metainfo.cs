@@ -145,6 +145,38 @@ public sealed class Metainfo
 
     public static Metainfo Load(string path) => Parse(File.ReadAllBytes(path));
 
+    /// <summary>
+    /// Builds a torrent from an info dictionary fetched from peers, which is
+    /// all a magnet link ever gets. The bytes are wrapped in the file a torrent
+    /// would have been, verbatim, so the infohash computed from them is the one
+    /// that was asked for — copying them into a rebuilt dictionary would be the
+    /// same mistake as hashing a re-encoding.
+    /// </summary>
+    public static Metainfo FromInfoDictionary(ReadOnlyMemory<byte> rawInfo, IEnumerable<string>? trackers = null)
+    {
+        List<string> urls = [.. (trackers ?? []).Where(url => url.Length > 0)];
+
+        using MemoryStream file = new();
+        file.WriteByte((byte)'d');
+
+        // Keys in a torrent file are sorted, and "announce-list" comes before
+        // "info".
+        if (urls.Count > 0)
+        {
+            BList tiers = new([.. urls.Select(url => (BValue)new BList([new BString(url)]))]);
+            byte[] encoded = BencodeWriter.Encode(tiers);
+
+            file.Write("13:announce-list"u8);
+            file.Write(encoded);
+        }
+
+        file.Write("4:info"u8);
+        file.Write(rawInfo.Span);
+        file.WriteByte((byte)'e');
+
+        return Parse(file.ToArray());
+    }
+
     public static Metainfo Parse(ReadOnlyMemory<byte> torrentFile)
     {
         BValue root;

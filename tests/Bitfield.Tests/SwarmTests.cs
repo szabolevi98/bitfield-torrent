@@ -150,6 +150,48 @@ internal static class SwarmTests
             check("swarm: the peers that served it had downloaded it themselves",
                 first.Download.Uploaded + second.Download.Uploaded >= ContentSize,
                 $"{first.Download.Uploaded:N0} + {second.Download.Uploaded:N0} bytes");
+
+            // ------------------------------------- starting from a hash alone
+
+            // What a magnet link amounts to: the torrent's identity and nothing
+            // else. The description has to be asked of the swarm and checked
+            // against the hash that asked for it.
+            MagnetLink link = new()
+            {
+                InfoHash = torrent.InfoHash,
+                DisplayName = "whatever the link happened to say",
+            };
+
+            Metainfo resolved = await MagnetResolver.ResolveAsync(
+                link,
+                PeerId.Generate(),
+                port: 0,
+                extraPeers: [first.EndPoint, second.EndPoint],
+                cancellationToken: swarm.Token).ConfigureAwait(false);
+
+            check("magnet: a peer handed over the description",
+                resolved.InfoHash == torrent.InfoHash, $"{resolved.InfoHash}");
+            check("magnet: which is the torrent's own bytes, unchanged",
+                resolved.RawInfo.Span.SequenceEqual(torrent.RawInfo.Span), "");
+            check("magnet: so the real name replaces the link's suggestion",
+                resolved.Name == torrent.Name, resolved.Name);
+            check("magnet: and the pieces are all there",
+                resolved.PieceCount == torrent.PieceCount && resolved.TotalLength == torrent.TotalLength,
+                $"{resolved.PieceCount} pieces, {resolved.TotalLength} bytes");
+
+            Node fromMagnet = await StartAsync(resolved, root, "magnet", null, seeding: false, swarm.Token)
+                .ConfigureAwait(false);
+            nodes.Add(fromMagnet);
+
+            fromMagnet.Download.AddPeer(first.EndPoint);
+            fromMagnet.Download.AddPeer(second.EndPoint);
+
+            bool downloadedFromHash = await WaitForAsync(() => fromMagnet.Download.IsComplete, swarm.Token)
+                .ConfigureAwait(false);
+
+            check("magnet: and the torrent downloads from the hash alone", downloadedFromHash,
+                $"{fromMagnet.Download.Have}");
+            check("magnet: with the content intact", Matches(fromMagnet, built.Content), "");
         }
         finally
         {

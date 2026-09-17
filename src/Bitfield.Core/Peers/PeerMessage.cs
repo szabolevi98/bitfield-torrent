@@ -16,6 +16,12 @@ public enum MessageId : byte
 
     /// <summary>The sender's DHT port (BEP 5).</summary>
     Port = 9,
+
+    /// <summary>
+    /// A message from an extension negotiated by name (BEP 10). Its first
+    /// payload byte says which extension, and zero is the negotiation itself.
+    /// </summary>
+    Extended = 20,
 }
 
 /// <summary>
@@ -89,6 +95,19 @@ public readonly struct PeerMessage
         return new PeerMessage(MessageId.Piece, payload);
     }
 
+    /// <summary>
+    /// A message belonging to a negotiated extension. The id is the number the
+    /// <em>receiving</em> peer asked for in its handshake, not the one this
+    /// client uses — each side names its own.
+    /// </summary>
+    public static PeerMessage Extended(byte extension, ReadOnlySpan<byte> payload)
+    {
+        byte[] bytes = new byte[1 + payload.Length];
+        bytes[0] = extension;
+        payload.CopyTo(bytes.AsSpan(1));
+        return new PeerMessage(MessageId.Extended, bytes);
+    }
+
     public static PeerMessage Port(int port)
     {
         byte[] payload = new byte[2];
@@ -146,6 +165,12 @@ public readonly struct PeerMessage
     }
 
     public int ReadHave() => ReadInt32(MessageId.Have, 4, 0);
+
+    public (byte Extension, ReadOnlyMemory<byte> Payload) ReadExtended()
+    {
+        Expect(MessageId.Extended, minimumLength: 1);
+        return (Payload.Span[0], Payload[1..]);
+    }
 
     public int ReadPort()
     {

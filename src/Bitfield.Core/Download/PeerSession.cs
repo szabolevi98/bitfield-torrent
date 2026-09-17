@@ -69,14 +69,17 @@ public sealed class PeerSession
     private int _outstanding;
     private long _blockBytes;
     private bool _counted;
+    private byte _theirMetadataExtension;
 
     public PeerSession(
         PeerConnection connection,
         Metainfo torrent,
         PiecePicker picker,
         IPieceReceiver receiver,
-        IBlockSource? blocks = null)
+        IBlockSource? blocks = null,
+        int port = 6881)
     {
+        Port = port;
         _connection = connection;
         _torrent = torrent;
         _picker = picker;
@@ -84,6 +87,9 @@ public sealed class PeerSession
         _blocks = blocks;
         _state = new PeerState(torrent.PieceCount);
     }
+
+    /// <summary>The port this client tells peers it accepts connections on.</summary>
+    public int Port { get; }
 
     public IPEndPoint RemoteEndPoint => _connection.RemoteEndPoint;
 
@@ -148,6 +154,16 @@ public sealed class PeerSession
             {
                 await _connection.SendAsync(PeerMessage.Interested, cancellationToken).ConfigureAwait(false);
                 _state.SetInterested(true);
+            }
+
+            // A peer that speaks the extension protocol is told what this
+            // client can do, including that it can hand over the torrent's own
+            // description — which is how a magnet link gets started.
+            if (_connection.RemoteReserved.SupportsExtensionProtocol)
+            {
+                await _connection.SendAsync(
+                    MetadataExchange.Handshake(Port, _torrent.RawInfo.Length),
+                    cancellationToken).ConfigureAwait(false);
             }
 
             // Peers want to know what this client already has, so that they can
@@ -249,7 +265,42 @@ public sealed class PeerSession
             case MessageId.Piece:
                 await TakeBlockAsync(message, cancellationToken).ConfigureAwait(false);
                 return;
+
+            case MessageId.Extended:
+                await HandleExtendedAsync(message, cancellationToken).ConfigureAwait(false);
+                return;
         }
+    }
+
+    /// <summary>
+    /// The extension protocol, of which this client offers one extension: it
+    /// will hand over the torrent's description to a peer that only has the
+    /// infohash.
+    /// </summary>
+    private async Task HandleExtendedAsync(PeerMessage message, CancellationToken cancellationToken)
+    {
+        (byte extension, ReadOnlyMemory<byte> payload) = message.ReadExtended();
+
+        if (extension == 0)
+        {
+            if (MetadataExchange.ReadHandshake(payload) is { } support)
+            {
+                _theirMetadataExtension = support.MetadataExtension;
+            }
+
+            return;
+        }
+
+        if (extension != MetadataExchange.OurMetadataExtension
+            || _theirMetadataExtension == 0
+            || !MetadataExchange.TryReadRequest(payload, out int piece))
+        {
+            return;
+        }
+
+        await _connection.SendAsync(
+            PeerMessage.Extended(_theirMetadataExtension, MetadataExchange.DataMessage(piece, _torrent.RawInfo)),
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

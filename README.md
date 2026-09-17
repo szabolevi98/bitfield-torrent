@@ -11,15 +11,16 @@ download proceeds.
 
 ## Status
 
-Milestone 6 of 9. **It downloads and it shares.** A torrent is read, its
-tracker answers, a few dozen peers are kept busy at once, pieces are picked
-rarest first, and every piece that verifies is written across the files it
-straddles. An interrupted download picks up where it left off. Peers that
-connect are answered, blocks are served from disk, and the choking algorithm
-decides which few are worth answering. Still to come: UDP trackers, magnet
-links and the DHT — and the window opens and is empty.
+Milestone 7 of 9. **It downloads, it shares, and it starts from a magnet
+link.** A torrent is read — from a file, or from nothing but its hash by asking
+the swarm for its description — its trackers answer over HTTP or UDP, a few
+dozen peers are kept busy at once, pieces are picked rarest first, and every
+piece that verifies is written across the files it straddles. An interrupted
+download picks up where it left off. Peers that connect are answered, blocks
+are served from disk, and the choking algorithm decides which few are worth
+answering. Still to come: the DHT — and the window opens and is empty.
 
-**334 offline checks pass**, covering the bencode reader and writer, the
+**368 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
 tracker reply arrives in, the peer handshake and every wire message, the piece
 picker, and writing pieces across file boundaries — plus three real torrent
@@ -44,6 +45,9 @@ Against the live swarm, on 2026-09-17:
 | `torrent.ubuntu.com` (HTTPS) | answered in 348 ms, 1,608 seeders reported |
 | Piece 0 from a qBittorrent 5.1.0 peer / an rqbit 8.1.1 peer | SHA-1 verified in 1,122 ms / 351 ms |
 | The same ISO over HTTP from Debian's mirror, one stream, for comparison | 18.32 MB/s |
+| **The same ISO from a magnet link — hash only, UDP tracker** | **description fetched from a stranger in 726 ms, then 792,723,456 bytes in 69.8 s, SHA-256 matching** |
+| `tracker.opentrackr.org` (UDP) | 32 peers |
+| The description from a magnet link, over an HTTP tracker | 60,578 bytes from an rqbit 8.1.1 peer, 562 ms, infohash verified |
 | Seeding that ISO to the public swarm for ten minutes | **nothing uploaded — see below** |
 
 ```
@@ -107,7 +111,7 @@ say so rather than to look reassuring:
 | **4** | **Full download, multi-file, resume** | **Done — an ISO's published SHA-256 matches** |
 | **5** | **Piece picker, pipelining, many peers** | **Done — sustained throughput on a real swarm** |
 | **6** | **Seeding and choking** | **Done — the local swarm test passes** |
-| 7 | UDP trackers, magnet, `ut_metadata` | A magnet link downloads from scratch |
+| **7** | **UDP trackers, magnet, `ut_metadata`** | **Done — a magnet link downloads from scratch** |
 | 8 | DHT | Peers found with no tracker involved |
 | 9 | The window: piece map, peers, graphs, rate limits, UPnP | — |
 
@@ -129,6 +133,25 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### A magnet link is a hash and a promise
+
+A magnet link carries the torrent's infohash and, beyond that, only hints: a
+name to show, some trackers to try, sometimes a peer or two. The description
+that would have been in a `.torrent` file has to be asked of the swarm, which
+means taking it from a stranger who has every opportunity to hand over a
+description of something else.
+
+What makes that safe is the same thing that makes the pieces safe. The
+description's SHA-1 has to be the infohash the link asked for, so a substituted
+one is caught before a byte of it is believed — and the bytes are kept exactly
+as the peer sent them, because that hash is taken over those bytes rather than
+over a re-encoding, which is the same reason a torrent read from a file keeps
+its info dictionary's original range.
+
+The name in the link is treated as what it is: in the swarm test the link says
+one thing and the fetched description says another, and it is the description
+that wins.
 
 ### Uploading to strangers is not demonstrated yet
 
