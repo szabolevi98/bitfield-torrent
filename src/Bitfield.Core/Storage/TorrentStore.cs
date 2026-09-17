@@ -10,6 +10,12 @@ public sealed record TorrentState
     public required string SavePath { get; init; }
 
     public DateTimeOffset AddedOn { get; init; } = DateTimeOffset.Now;
+
+    /// <summary>
+    /// Stopped by the user. Kept because a paused torrent that starts itself
+    /// again when the client restarts is the client overruling the user.
+    /// </summary>
+    public bool Paused { get; init; }
 }
 
 /// <summary>A torrent read back from the store on startup.</summary>
@@ -60,6 +66,7 @@ public sealed class TorrentStore
 
         BDictionary saved = Dictionary(
             ("added", new BInteger(state.AddedOn.ToUnixTimeSeconds())),
+            ("paused", new BInteger(state.Paused ? 1 : 0)),
             ("save path", new BString(state.SavePath)),
             ("version", new BInteger(1)));
 
@@ -70,6 +77,7 @@ public sealed class TorrentStore
     {
         BDictionary saved = Dictionary(
             ("added", new BInteger(state.AddedOn.ToUnixTimeSeconds())),
+            ("paused", new BInteger(state.Paused ? 1 : 0)),
             ("save path", new BString(state.SavePath)),
             ("version", new BInteger(1)));
 
@@ -109,6 +117,7 @@ public sealed class TorrentStore
                 {
                     SavePath = savePath,
                     AddedOn = DateTimeOffset.FromUnixTimeSeconds(state.GetInteger("added") ?? 0),
+                    Paused = state.GetInteger("paused") == 1,
                 }));
             }
             catch (Exception e) when (e is MetainfoException or BencodeException or IOException)

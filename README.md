@@ -11,14 +11,15 @@ download proceeds.
 
 ![Bitfield Torrent downloading a Debian ISO](docs/screenshot.png)
 
-A fifth of the way into the Debian netinst ISO at 19.2 MB/s across 16 peers. The
-speckle is what rarest first looks like: pieces arriving from all over the
-torrent rather than in order, with the darker cells the ones in flight.
+Two torrents: one downloading the Debian netinst ISO at 15.6 MB/s across 29
+peers, one paused. The speckle in the piece map is what rarest first looks
+like — pieces arriving from all over the torrent rather than in order, with the
+darker cells the ones in flight.
 
 ## Status
 
-Milestone 10 of 13. **It works, it has a window, and it runs more than one
-torrent.** A torrent is read —
+Milestone 11 of 13. **It works, it has a window, and it runs, pauses and
+resumes more than one torrent.** A torrent is read —
 from a file, or from nothing but its hash by asking the swarm for its
 description — its trackers answer over HTTP or UDP, the DHT finds peers with no
 tracker at all, a few dozen peers are kept busy at once, pieces are picked
@@ -34,9 +35,14 @@ content, holds every torrent together to a rate limit, and asks the router to
 forward its port. Torrents come back when the client is started again, seeding
 included.
 
-Still to come: pause, file priorities, and the notification area.
+Pausing stops a torrent without forgetting it — the connections go, the tracker
+is told, and what has been downloaded stays where it is. Resuming picks it up
+again **without hashing a single byte**, and a torrent paused when the client
+closed comes back paused.
 
-**418 offline checks pass**, covering the bencode reader and writer, the
+Still to come: file priorities and the notification area.
+
+**429 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
 tracker reply arrives in, the peer handshake and every wire message, the piece
 picker, the DHT's distance arithmetic, routing table and messages, and writing
@@ -137,7 +143,7 @@ say so rather than to look reassuring:
 | **8** | **DHT** | **Done — peers found with no tracker involved** |
 | **9** | **The window: piece map, peers, graphs, rate limits, UPnP** | **Done** |
 | **10** | **More than one torrent: add, remove, a list that survives a restart** | **Done** |
-| 11 | Status and pause: checking, downloading, seeding, paused, stopped | Pausing keeps the progress and does not rehash |
+| **11** | **Status and pause: checking, downloading, stalled, seeding, paused** | **Done — pausing keeps the progress and rehashes nothing** |
 | 12 | File priorities, including not downloading a file at all | A torrent is finished when every wanted piece is held |
 | 13 | Notification area, one instance, settings, about | — |
 
@@ -159,6 +165,29 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### What a tracker is told, and when
+
+A download that ended used to announce `completed` to its tracker whatever had
+actually happened — including a torrent cancelled at forty per cent. On a
+tracker that keeps ratios that is a client claiming to have finished something
+it did not, which is the sort of thing that gets an account looked at.
+
+It now announces `stopped` whenever it leaves a swarm, and `completed` exactly
+once: at the moment the piece that finishes the torrent verifies, and only if
+it did not start finished.
+
+### Pausing must not rehash
+
+The obvious way to implement pausing is to tear the download down and, on
+resume, let it work out what is on disk the way it does at startup. That is
+minutes of hashing for a torrent that was paused for a second, and on a large
+torrent it is the difference between a pause being free and being something you
+avoid using.
+
+So what a torrent holds is kept by the session rather than by the download, and
+the download is rebuilt around it. The check for this watches the session
+throughout a pause and resume and fails if it ever goes back to checking.
 
 ### The engine is not the window
 

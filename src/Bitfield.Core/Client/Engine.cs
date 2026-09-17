@@ -5,7 +5,7 @@ using Bitfield.Core.Peers;
 using Bitfield.Core.Storage;
 using Bitfield.Core.Torrents;
 
-namespace Bitfield;
+namespace Bitfield.Core.Client;
 
 /// <summary>
 /// The client itself: the torrents, the DHT node, the listening port and the
@@ -16,7 +16,7 @@ namespace Bitfield;
 /// has to stay open for the downloads to keep running — so the window becomes a
 /// view onto this rather than the thing itself.
 /// </summary>
-internal sealed class Engine : IAsyncDisposable
+public sealed class Engine : IAsyncDisposable
 {
     private readonly ConcurrentDictionary<InfoHash, TorrentSession> _torrents = new();
     private readonly CancellationTokenSource _stop = new();
@@ -219,6 +219,26 @@ internal sealed class Engine : IAsyncDisposable
                 current = Path.GetDirectoryName(current) ?? root;
             }
         }
+    }
+
+    /// <summary>Stops a torrent, or starts it again, and remembers which.</summary>
+    public void SetPaused(InfoHash infoHash, bool paused)
+    {
+        if (Find(infoHash) is not { } session)
+        {
+            return;
+        }
+
+        if (paused)
+        {
+            session.Pause();
+        }
+        else
+        {
+            session.Resume();
+        }
+
+        Changed?.Invoke();
     }
 
     public TorrentSession? Find(InfoHash infoHash) =>

@@ -49,6 +49,7 @@ PickerTests.Run((name, pass, detail) => Check(name, pass, detail));
 MagnetTests.Run((name, pass, detail) => Check(name, pass, detail));
 DhtTests.Run((name, pass, detail) => Check(name, pass, detail));
 SwarmTests.Run((name, pass, detail) => Check(name, pass, detail));
+PauseTests.Run((name, pass, detail) => Check(name, pass, detail));
 
 Console.WriteLine();
 Console.WriteLine($"{total - failures}/{total} checks passed.");

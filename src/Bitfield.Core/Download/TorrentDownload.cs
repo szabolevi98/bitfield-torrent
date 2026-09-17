@@ -70,6 +70,11 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     private int _failedPieces;
     private int _connecting;
 
+    private readonly bool _startedComplete;
+    private int _completedToAnnounce;
+    private TrackerClient? _tracker;
+    private TrackerTiers? _tiers;
+
     public TorrentDownload(
         Metainfo torrent,
         TorrentStorage storage,
@@ -82,6 +87,7 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
         _picker = new PiecePicker(have);
         _peerId = peerId;
         _resumePath = resumePath;
+        _startedComplete = have.IsComplete;
     }
 
     /// <summary>How many connections to keep open at once.</summary>
@@ -150,6 +156,9 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     public long Uploaded =>
         Interlocked.Read(ref _uploadedByClosedPeers) + _sessions.Values.Sum(session => session.Uploaded);
 
+    /// <summary>How many peers are connected, without building a whole snapshot.</summary>
+    public int ConnectedPeerCount => _sessions.Count;
+
     /// <summary>The pieces being fetched right now, for the piece map to show.</summary>
     public int[] PiecesInProgress() => _picker.InProgress();
 
@@ -179,6 +188,9 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     {
         using TrackerClient tracker = new();
         TrackerTiers tiers = new(_torrent.AnnounceTiers);
+
+        _tracker = tracker;
+        _tiers = tiers;
 
         using CancellationTokenSource finished = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -210,13 +222,23 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
 
             SaveResume();
 
-            // The tracker is told the download finished, which is what a ratio
-            // is credited from on the trackers that keep one.
+            // Whatever else happened, this client is leaving the swarm, and the
+            // tracker is told so rather than left handing out an address that
+            // no longer answers.
+            //
+            // It is emphatically not told the download completed. That is
+            // announced once, at the moment it actually does, by the loop
+            // below — announcing it on every stop would tell a tracker that
+            // keeps ratios that a torrent abandoned at forty per cent had
+            // finished.
             if (tiers.Count > 0)
             {
-                await TellTrackerAsync(tracker, tiers, TrackerEvent.Completed, CancellationToken.None)
+                await TellTrackerAsync(tracker, tiers, TrackerEvent.Stopped, CancellationToken.None)
                     .ConfigureAwait(false);
             }
+
+            _tracker = null;
+            _tiers = null;
         }
     }
 
@@ -546,6 +568,13 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
 
             Progress?.Invoke(Snapshot());
 
+            if (Interlocked.Exchange(ref _completedToAnnounce, 0) == 1 && _tracker != null && _tiers is { Count: > 0 })
+            {
+                await TellTrackerAsync(_tracker, _tiers, TrackerEvent.Completed, cancellationToken)
+                    .ConfigureAwait(false);
+                Note?.Invoke("the tracker was told this torrent is complete");
+            }
+
             // Saved often enough that an interrupted download loses seconds of
             // work rather than minutes.
             if (++sinceSave >= 20)
@@ -571,6 +600,13 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
 
         _picker.Completed(piece);
         Interlocked.Add(ref _downloaded, data.Length);
+
+        // The one moment a tracker is entitled to hear "completed": the piece
+        // that finished the torrent, and only if it did not start finished.
+        if (!_startedComplete && _picker.IsComplete)
+        {
+            Interlocked.Exchange(ref _completedToAnnounce, 1);
+        }
 
         // Telling peers what arrived is what makes this client worth connecting
         // to, and it is how a swarm spreads a piece instead of everyone

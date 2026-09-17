@@ -1,4 +1,5 @@
 using Bitfield.Controls;
+using Bitfield.Core.Client;
 using Bitfield.Core.Download;
 using Bitfield.Core.Torrents;
 
@@ -24,6 +25,7 @@ internal sealed class MainForm : Form
     private readonly ListBox _log = new();
     private readonly System.Windows.Forms.Timer _tick = new() { Interval = 500 };
 
+    private Button? _pauseButton;
     private readonly TextBox _downLimit = new();
     private readonly TextBox _upLimit = new();
     private readonly List<string> _notes = [];
@@ -179,6 +181,7 @@ internal sealed class MainForm : Form
 
         buttons.Controls.Add(Button("Add torrent…", OpenTorrent));
         buttons.Controls.Add(Button("Add magnet…", OpenMagnet));
+        buttons.Controls.Add(_pauseButton = Button("Pause", TogglePauseSelected));
         buttons.Controls.Add(Button("Remove…", () => RemoveSelected(deleteFiles: false)));
 
         header.Controls.Add(buttons);
@@ -402,12 +405,27 @@ internal sealed class MainForm : Form
             ShowImageMargin = false,
         };
 
+        if (_engine.Find(infoHash) is { } session)
+        {
+            menu.Items.Add(session.Paused ? "Resume" : "Pause", null,
+                (_, _) => _engine.SetPaused(infoHash, !session.Paused));
+            menu.Items.Add(new ToolStripSeparator());
+        }
+
         menu.Items.Add("Open containing folder", null, (_, _) => OpenFolder(infoHash));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Remove", null, (_, _) => Remove(infoHash, deleteFiles: false));
         menu.Items.Add("Remove and delete files…", null, (_, _) => Remove(infoHash, deleteFiles: true));
 
         menu.Show(_list, point);
+    }
+
+    private void TogglePauseSelected()
+    {
+        if (_list.Selected is { } selected && _engine.Find(selected) is { } session)
+        {
+            _engine.SetPaused(selected, !session.Paused);
+        }
     }
 
     private void RemoveSelected(bool deleteFiles)
@@ -497,22 +515,33 @@ internal sealed class MainForm : Form
         }
 
         _list.Set(rows);
+
+        if (_pauseButton != null)
+        {
+            TorrentSession? selected = _list.Selected is { } infoHash ? _engine.Find(infoHash) : null;
+            _pauseButton.Text = selected?.Paused == true ? "Resume" : "Pause";
+            _pauseButton.Enabled = selected != null;
+        }
     }
 
     private static string StatusText(TorrentSession session) => session.Status switch
     {
-        TorrentStatus.Checking => "checking",
+        TorrentStatus.Checking => $"checking {session.CheckedFraction * 100:N0}%",
         TorrentStatus.Seeding => "seeding",
+        TorrentStatus.Paused => "paused",
+        TorrentStatus.Stalled => "stalled",
         TorrentStatus.Error => "error",
-        _ => session.Download?.Snapshot().ConnectedPeers > 0 ? "downloading" : "finding peers",
+        _ => "downloading",
     };
 
     private static Color StatusColour(TorrentSession session) => session.Status switch
     {
         TorrentStatus.Checking => Theme.Warning,
         TorrentStatus.Seeding => Theme.Upload,
+        TorrentStatus.Paused => Theme.TextMuted,
+        TorrentStatus.Stalled => Theme.TextMuted,
         TorrentStatus.Error => Color.FromArgb(0xE0, 0x6C, 0x6C),
-        _ => Theme.TextSecondary,
+        _ => Theme.Accent,
     };
 
     /// <summary>
@@ -562,9 +591,27 @@ internal sealed class MainForm : Form
 
         if (session.Download is not { } download)
         {
+            // Paused or still checking: the piece map still has something to
+            // say, because what is held does not go anywhere while it waits.
+            if (session.Have is { } held)
+            {
+                _map.SetPieces(session.PieceCount, held.Span, []);
+            }
+            else
+            {
+                _map.Clear();
+            }
+
+            _peers.Set([]);
+
             _stats.Set(
-                ("status", "checking", Theme.Warning),
-                ("hashed", $"{session.CheckedFraction * 100:N0}%", Theme.Warning));
+                session.Paused
+                    ? ("status", "paused", Theme.TextMuted)
+                    : ("status", "checking", Theme.Warning),
+                ("progress", $"{session.Fraction * 100:N1}%", Theme.Accent),
+                ("downloaded", Theme.Bytes(session.Downloaded), Theme.TextSecondary),
+                ("uploaded", Theme.Bytes(session.Uploaded), Theme.Upload));
+
             return;
         }
 
