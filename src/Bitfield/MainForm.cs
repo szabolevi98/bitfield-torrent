@@ -1,43 +1,37 @@
 using Bitfield.Controls;
-using Bitfield.Core.Dht;
 using Bitfield.Core.Download;
-using Bitfield.Core.Peers;
 using Bitfield.Core.Torrents;
 
 namespace Bitfield;
 
 /// <summary>
-/// The window. A torrent at a time, with the piece map in the middle of it.
+/// The window: every torrent in a list, and the selected one in detail below.
 ///
-/// Everything the engine reports arrives on its own threads, so the window
-/// polls a snapshot on a timer rather than being called into from them: one
-/// place that reads the state and one place that draws it, which is far easier
-/// to keep honest than a dozen invoked callbacks.
+/// It owns nothing that matters. The engine runs the torrents whether this is
+/// open or not; the window reads one snapshot of it on a timer and draws that,
+/// which is far easier to keep honest than a dozen callbacks arriving from a
+/// dozen threads.
 /// </summary>
 internal sealed class MainForm : Form
 {
+    private readonly Engine _engine = new();
+
+    private readonly TorrentListControl _list = new() { Dock = DockStyle.Fill };
     private readonly PieceMapControl _map = new() { Dock = DockStyle.Fill };
-    private readonly SpeedGraphControl _graph = new() { Dock = DockStyle.Top, Height = 150 };
+    private readonly SpeedGraphControl _graph = new() { Dock = DockStyle.Top, Height = 140 };
     private readonly PeerListControl _peers = new() { Dock = DockStyle.Fill };
     private readonly StatsBar _stats = new() { Dock = DockStyle.Top };
     private readonly ListBox _log = new();
-    private readonly Label _title = new();
     private readonly System.Windows.Forms.Timer _tick = new() { Interval = 500 };
 
     private readonly TextBox _downLimit = new();
     private readonly TextBox _upLimit = new();
-    private readonly PeerId _peerId = PeerId.Generate();
     private readonly List<string> _notes = [];
 
-    private TorrentSession? _session;
-    private DhtNode? _dht;
-    private PeerListener? _listener;
-    private CancellationTokenSource? _background;
-    private PortMapping.Mapping? _mapping;
+    private readonly Dictionary<InfoHash, (long Down, long Up, DateTime At)> _lastSample = [];
 
-    private long _lastDownloaded;
-    private long _lastUploaded;
-    private DateTime _lastSample = DateTime.UtcNow;
+    /// <summary>This tick's rates, worked out once in the list and read again by the detail panel.</summary>
+    private readonly Dictionary<InfoHash, (double Down, double Up)> _rates = [];
 
     private readonly string? _openOnStart;
     private readonly string? _directoryOnStart;
@@ -49,8 +43,8 @@ internal sealed class MainForm : Form
 
         Text = "Bitfield Torrent";
         Icon = LoadIcon();
-        ClientSize = new Size(1180, 760);
-        MinimumSize = new Size(900, 560);
+        ClientSize = new Size(1240, 860);
+        MinimumSize = new Size(960, 640);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Background;
         ForeColor = Theme.TextPrimary;
@@ -58,23 +52,24 @@ internal sealed class MainForm : Form
 
         BuildLayout();
 
+        _engine.Note += Note;
+        _engine.Changed += () => BeginInvoke(RefreshList);
+
+        _list.SelectionChanged += () => BeginInvoke(OnSelectionChanged);
+        _list.RowMenu += (infoHash, point) => ShowRowMenu(infoHash, point);
+
         _tick.Tick += (_, _) => OnTick();
         _tick.Start();
 
-        Shown += (_, _) =>
+        Shown += async (_, _) =>
         {
-            StartBackground();
+            await _engine.StartAsync();
             OpenFromCommandLine();
         };
+
         FormClosing += (_, _) => Shutdown();
     }
 
-    /// <summary>
-    /// The window's own icon, which is what the title bar and the taskbar show.
-    /// Setting the executable's icon is a separate thing and does not reach
-    /// either of them — a form without this keeps the default one Windows Forms
-    /// supplies, whatever the exe looks like in Explorer.
-    /// </summary>
     private static Icon? LoadIcon()
     {
         using Stream? stream = typeof(MainForm).Assembly.GetManifestResourceStream("Bitfield.app.ico");
@@ -93,6 +88,8 @@ internal sealed class MainForm : Form
         Native.NativeMethods.UseDarkTitleBar(Handle);
     }
 
+    // ------------------------------------------------------------- the layout
+
     private void BuildLayout()
     {
         Panel side = new()
@@ -105,16 +102,15 @@ internal sealed class MainForm : Form
 
         Panel peersHost = new() { Dock = DockStyle.Fill, BackColor = Theme.Background, Padding = new Padding(0, 8, 0, 0) };
         peersHost.Controls.Add(_peers);
-
         side.Controls.Add(peersHost);
         side.Controls.Add(_graph);
 
         Panel centre = new() { Dock = DockStyle.Fill, BackColor = Theme.Background };
         centre.Controls.Add(_map);
 
-        Panel body = new() { Dock = DockStyle.Fill, Padding = new Padding(12, 8, 12, 0), BackColor = Theme.Background };
-        body.Controls.Add(centre);
-        body.Controls.Add(side);
+        Panel detail = new() { Dock = DockStyle.Fill, Padding = new Padding(12, 8, 12, 0), BackColor = Theme.Background };
+        detail.Controls.Add(centre);
+        detail.Controls.Add(side);
 
         Panel statsHost = new()
         {
@@ -125,27 +121,68 @@ internal sealed class MainForm : Form
         };
         statsHost.Controls.Add(_stats);
 
-        Controls.Add(body);
+        Panel listHost = new()
+        {
+            Dock = DockStyle.Top,
+            Height = 220,
+            Padding = new Padding(12, 0, 12, 10),
+            BackColor = Theme.Background,
+        };
+        listHost.Controls.Add(_list);
+
+        Splitter splitter = new()
+        {
+            Dock = DockStyle.Top,
+            Height = 6,
+            BackColor = Theme.Background,
+            MinExtra = 220,
+            MinSize = 90,
+        };
+
+        Controls.Add(detail);
         Controls.Add(statsHost);
+        Controls.Add(splitter);
+        Controls.Add(listHost);
         Controls.Add(BuildHeader());
         Controls.Add(BuildLog());
     }
 
     private Control BuildHeader()
     {
-        Panel header = new() { Dock = DockStyle.Top, Height = 62, BackColor = Theme.Background, Padding = new Padding(12, 10, 12, 0) };
+        Panel header = new() { Dock = DockStyle.Top, Height = 56, BackColor = Theme.Background, Padding = new Padding(12, 8, 12, 0) };
 
-        _title.Text = "No torrent open";
-        _title.ForeColor = Theme.TextSecondary;
-        _title.Font = new Font("Segoe UI", 11F);
-        _title.AutoSize = true;
-        _title.Location = new Point(262, 14);
+        // The limits go in a panel docked to the right rather than placed at a
+        // computed offset: a position worked out from the form's width is wrong
+        // the moment anything around it has padding, which is how they ended up
+        // off the edge of the window the first time.
+        FlowLayoutPanel limits = new()
+        {
+            Dock = DockStyle.Right,
+            FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true,
+            BackColor = Theme.Background,
+            WrapContents = false,
+            Padding = new Padding(0, 2, 0, 0),
+        };
 
-        header.Controls.Add(_title);
-        header.Controls.Add(Button("Open torrent…", 12, OpenTorrent));
-        header.Controls.Add(Button("Magnet link…", 132, OpenMagnet));
-        header.Controls.Add(Limit(_downLimit, "down KB/s", 0));
-        header.Controls.Add(Limit(_upLimit, "up KB/s", 150));
+        limits.Controls.Add(Limit(_downLimit, "down KB/s"));
+        limits.Controls.Add(Limit(_upLimit, "up KB/s"));
+
+        FlowLayoutPanel buttons = new()
+        {
+            Dock = DockStyle.Left,
+            FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true,
+            BackColor = Theme.Background,
+            WrapContents = false,
+        };
+
+        buttons.Controls.Add(Button("Add torrent…", OpenTorrent));
+        buttons.Controls.Add(Button("Add magnet…", OpenMagnet));
+        buttons.Controls.Add(Button("Remove…", () => RemoveSelected(deleteFiles: false)));
+
+        header.Controls.Add(buttons);
+        header.Controls.Add(limits);
 
         return header;
     }
@@ -153,33 +190,53 @@ internal sealed class MainForm : Form
     private Control BuildLog()
     {
         _log.Dock = DockStyle.Bottom;
-        _log.Height = 92;
+        _log.Height = 76;
         _log.BackColor = Theme.Surface;
         _log.ForeColor = Theme.TextSecondary;
         _log.BorderStyle = BorderStyle.None;
         _log.Font = Theme.CaptionFont;
         _log.IntegralHeight = false;
 
-        Panel host = new() { Dock = DockStyle.Bottom, Height = 104, Padding = new Padding(12, 8, 12, 12), BackColor = Theme.Background };
+        Panel host = new() { Dock = DockStyle.Bottom, Height = 88, Padding = new Padding(12, 8, 12, 12), BackColor = Theme.Background };
         host.Controls.Add(_log);
         return host;
     }
 
+    private Button Button(string text, Action onClick)
+    {
+        Button button = new()
+        {
+            Text = text,
+            Margin = new Padding(0, 4, 8, 0),
+            Size = new Size(112, 30),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.SurfaceRaised,
+            ForeColor = Theme.TextPrimary,
+            Font = Theme.UiFont,
+            Cursor = Cursors.Hand,
+        };
+
+        button.FlatAppearance.BorderColor = Theme.Border;
+        button.FlatAppearance.MouseOverBackColor = Theme.SurfaceHover;
+        button.FlatAppearance.MouseDownBackColor = Theme.Selection;
+        button.Click += (_, _) => onClick();
+
+        return button;
+    }
+
     /// <summary>
-    /// A rate limit box. Zero means no limit, which is what both start at —
-    /// throttling a client by default would be a surprise, and the number is
-    /// there for the times a download is in the way of something else.
+    /// A rate limit box, applying to every torrent at once. Zero means no
+    /// limit, which is what both start at — throttling a client by default
+    /// would be a surprise.
     /// </summary>
-    private Control Limit(TextBox box, string caption, int offsetFromRight)
+    private Control Limit(TextBox box, string caption)
     {
         Panel panel = new()
         {
-            Size = new Size(96, 42),
+            Size = new Size(96, 40),
             BackColor = Theme.Background,
-            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            Margin = new Padding(8, 0, 0, 0),
         };
-
-        panel.Location = new Point(ClientSize.Width - 210 + offsetFromRight, 6);
 
         Label label = new()
         {
@@ -197,87 +254,21 @@ internal sealed class MainForm : Form
         box.ForeColor = Theme.TextPrimary;
         box.BorderStyle = BorderStyle.FixedSingle;
         box.Font = Theme.UiFont;
-        box.TextChanged += (_, _) => ApplyLimits();
+        box.TextChanged += (_, _) =>
+        {
+            _engine.DownloadLimit.BytesPerSecond = Kilobytes(_downLimit.Text);
+            _engine.UploadLimit.BytesPerSecond = Kilobytes(_upLimit.Text);
+        };
 
         panel.Controls.Add(label);
         panel.Controls.Add(box);
         return panel;
     }
 
-    private void ApplyLimits()
-    {
-        TorrentDownload? download = _session?.Download;
-        if (download == null)
-        {
-            return;
-        }
-
-        download.DownloadLimit.BytesPerSecond = Kilobytes(_downLimit.Text);
-        download.UploadLimit.BytesPerSecond = Kilobytes(_upLimit.Text);
-    }
-
     private static long Kilobytes(string text) =>
         long.TryParse(text.Trim(), out long value) && value > 0 ? value * 1024 : 0;
 
-    private Button Button(string text, int x, Action onClick)
-    {
-        Button button = new()
-        {
-            Text = text,
-            Location = new Point(x, 8),
-            Size = new Size(112, 30),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Theme.SurfaceRaised,
-            ForeColor = Theme.TextPrimary,
-            Font = Theme.UiFont,
-            Cursor = Cursors.Hand,
-        };
-
-        button.FlatAppearance.BorderColor = Theme.Border;
-        button.FlatAppearance.MouseOverBackColor = Theme.SurfaceHover;
-        button.FlatAppearance.MouseDownBackColor = Theme.Selection;
-        button.Click += (_, _) => onClick();
-
-        return button;
-    }
-
-    // ----------------------------------------------------------- the engine
-
-    private void StartBackground()
-    {
-        _background = new CancellationTokenSource();
-
-        // A DHT node and a listening port are what make this client a member of
-        // a swarm rather than a visitor, so both come up with the window.
-        _dht = new DhtNode(DhtNode.SavedId(TablePath()), port: 6881);
-        _dht.Load(TablePath());
-        _ = Task.Run(() => _dht.RunAsync(_background.Token), CancellationToken.None);
-
-        _listener = new PeerListener(6881, infoHash => _session?.Download.InfoHash == infoHash ? _session.Download : null);
-        _ = Task.Run(() => _listener.RunAsync(_background.Token), CancellationToken.None);
-
-        Note($"listening on {_listener.Port}, DHT on {_dht.Port}");
-
-        // Without a forwarded port this client can reach out but not be
-        // reached, and in a well seeded swarm the peers with anything to gain
-        // are the ones dialling out.
-        _ = Task.Run(async () =>
-        {
-            PortMapping.Mapping? mapping = await PortMapping
-                .AddAsync(6881, "Bitfield Torrent", _background.Token).ConfigureAwait(false);
-
-            _mapping = mapping;
-            Note(mapping != null
-                ? $"the router {mapping}"
-                : "no router would forward port 6881; peers can still be dialled out to");
-        }, CancellationToken.None);
-
-        _ = Task.Run(async () =>
-        {
-            int nodes = await _dht.BootstrapAsync(DhtNode.DefaultRouters, _background.Token).ConfigureAwait(false);
-            Note($"the DHT has {nodes} nodes");
-        }, CancellationToken.None);
-    }
+    // ---------------------------------------------------------- adding torrents
 
     private void OpenFromCommandLine()
     {
@@ -290,11 +281,11 @@ internal sealed class MainForm : Form
         {
             if (MagnetLink.TryParse(_openOnStart, out MagnetLink? link, out _))
             {
-                ResolveAndStart(link!);
+                ResolveAndAdd(link!, _directoryOnStart);
                 return;
             }
 
-            Start(Metainfo.Load(_openOnStart), _directoryOnStart);
+            Add(Metainfo.Load(_openOnStart), _directoryOnStart);
         }
         catch (Exception e)
         {
@@ -307,7 +298,8 @@ internal sealed class MainForm : Form
         using OpenFileDialog dialog = new()
         {
             Filter = "Torrent files (*.torrent)|*.torrent|All files (*.*)|*.*",
-            Title = "Open a torrent",
+            Title = "Add a torrent",
+            Multiselect = true,
         };
 
         if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -315,13 +307,27 @@ internal sealed class MainForm : Form
             return;
         }
 
-        try
+        // Several at once is the point of a list, so the folder is asked for
+        // once and they all go there.
+        string? directory = AskForFolder(dialog.FileNames.Length == 1
+            ? Path.GetFileName(dialog.FileName)
+            : $"{dialog.FileNames.Length} torrents");
+
+        if (directory == null)
         {
-            Start(Metainfo.Load(dialog.FileName));
+            return;
         }
-        catch (Exception e)
+
+        foreach (string path in dialog.FileNames)
         {
-            Note($"could not read that file: {e.Message}");
+            try
+            {
+                Add(Metainfo.Load(path), directory);
+            }
+            catch (Exception e)
+            {
+                Note($"could not read {Path.GetFileName(path)}: {e.Message}");
+            }
         }
     }
 
@@ -339,10 +345,10 @@ internal sealed class MainForm : Form
             return;
         }
 
-        ResolveAndStart(link!);
+        ResolveAndAdd(link!, null);
     }
 
-    private void ResolveAndStart(MagnetLink link)
+    private void ResolveAndAdd(MagnetLink link, string? directory)
     {
         Note($"asking the swarm about {link.InfoHash}");
 
@@ -350,113 +356,228 @@ internal sealed class MainForm : Form
         {
             try
             {
-                IReadOnlyList<System.Net.IPEndPoint> fromDht = _dht == null
+                IReadOnlyList<System.Net.IPEndPoint> fromDht = _engine.Dht == null
                     ? []
-                    : await _dht.FindPeersAsync(link.InfoHash, _background!.Token).ConfigureAwait(false);
+                    : await _engine.Dht.FindPeersAsync(link.InfoHash, CancellationToken.None).ConfigureAwait(false);
 
-                Metainfo torrent = await MagnetResolver.ResolveAsync(
-                    link, _peerId, 6881, fromDht, Note, _background!.Token).ConfigureAwait(false);
+                Metainfo torrent = await MagnetResolver
+                    .ResolveAsync(link, _engine.PeerId, _engine.Port, fromDht, Note)
+                    .ConfigureAwait(false);
 
-                BeginInvoke(() => Start(torrent));
+                BeginInvoke(() => Add(torrent, directory));
             }
             catch (Exception e)
             {
                 Note($"the description could not be fetched: {e.Message}");
             }
-        }, CancellationToken.None);
+        });
     }
 
-    private void Start(Metainfo torrent, string? into = null)
+    private void Add(Metainfo torrent, string? directory)
     {
-        string directory;
-
-        if (into != null)
+        directory ??= AskForFolder(torrent.Name);
+        if (directory == null)
         {
-            directory = into;
-        }
-        else
-        {
-            using FolderBrowserDialog folder = new() { Description = $"Where should \"{torrent.Name}\" go?" };
-            if (folder.ShowDialog(this) != DialogResult.OK)
-            {
-                return;
-            }
-
-            directory = folder.SelectedPath;
-        }
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                if (_session != null)
-                {
-                    await _session.DisposeAsync().ConfigureAwait(false);
-                    _session = null;
-                }
-
-                TorrentSession session = await TorrentSession.OpenAsync(
-                    torrent, directory, _peerId, _dht, Note, null, _background!.Token).ConfigureAwait(false);
-
-                _session = session;
-                BeginInvoke(ApplyLimits);
-
-                BeginInvoke(() =>
-                {
-                    _title.Text = torrent.Name;
-                    _title.ForeColor = Theme.TextPrimary;
-                    _graph.Clear();
-                });
-
-                Note($"{torrent.Name} — {Theme.Bytes(torrent.TotalLength)} in {torrent.PieceCount:N0} pieces"
-                    + (torrent.IsPrivate ? ", private, so the DHT stays out of it" : ""));
-            }
-            catch (Exception e)
-            {
-                Note($"could not open that torrent: {e.Message}");
-            }
-        }, CancellationToken.None);
-    }
-
-    // -------------------------------------------------------------- drawing
-
-    /// <summary>
-    /// Reads one snapshot of the engine and draws it. Everything the engine
-    /// does happens on its own threads; this is the only place that looks.
-    /// </summary>
-    private void OnTick()
-    {
-        TorrentSession? session = _session;
-
-        if (session == null)
-        {
-            _stats.Set(
-                ("status", "idle", Theme.TextMuted),
-                ("dht", $"{_dht?.Table.Count ?? 0:N0}", Theme.TextSecondary));
             return;
         }
 
-        DownloadProgress progress = session.Download.Snapshot();
+        _engine.Add(torrent, directory);
+    }
 
-        _map.SetPieces(
-            progress.PieceCount,
-            session.Download.Have.Span,
-            session.Download.PiecesInProgress());
+    private string? AskForFolder(string what)
+    {
+        using FolderBrowserDialog folder = new() { Description = $"Where should \"{what}\" go?" };
+        return folder.ShowDialog(this) == DialogResult.OK ? folder.SelectedPath : null;
+    }
 
-        double seconds = Math.Max((DateTime.UtcNow - _lastSample).TotalSeconds, 0.001);
-        long downloaded = session.Download.Downloaded;
-        long uploaded = session.Download.Uploaded;
+    // -------------------------------------------------------- removing torrents
 
-        double down = Math.Max(0, (downloaded - _lastDownloaded) / seconds);
-        double up = Math.Max(0, (uploaded - _lastUploaded) / seconds);
+    private void ShowRowMenu(InfoHash infoHash, Point point)
+    {
+        ContextMenuStrip menu = new()
+        {
+            BackColor = Theme.SurfaceRaised,
+            ForeColor = Theme.TextPrimary,
+            Font = Theme.UiFont,
+            ShowImageMargin = false,
+        };
 
-        _lastDownloaded = downloaded;
-        _lastUploaded = uploaded;
-        _lastSample = DateTime.UtcNow;
+        menu.Items.Add("Open containing folder", null, (_, _) => OpenFolder(infoHash));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Remove", null, (_, _) => Remove(infoHash, deleteFiles: false));
+        menu.Items.Add("Remove and delete files…", null, (_, _) => Remove(infoHash, deleteFiles: true));
 
+        menu.Show(_list, point);
+    }
+
+    private void RemoveSelected(bool deleteFiles)
+    {
+        if (_list.Selected is { } selected)
+        {
+            Remove(selected, deleteFiles);
+        }
+    }
+
+    /// <summary>
+    /// Removing a torrent is one confirmation; removing its files is another,
+    /// because one of those is undoable by adding the torrent again and the
+    /// other is somebody's download gone.
+    /// </summary>
+    private void Remove(InfoHash infoHash, bool deleteFiles)
+    {
+        TorrentSession? session = _engine.Find(infoHash);
+        if (session == null)
+        {
+            return;
+        }
+
+        string question = deleteFiles
+            ? $"Remove \"{session.Name}\" and delete everything it downloaded?\n\nThis cannot be undone."
+            : $"Remove \"{session.Name}\"?\n\nThe files it downloaded are left where they are.";
+
+        if (MessageBox.Show(this, question, deleteFiles ? "Remove and delete files" : "Remove torrent",
+                MessageBoxButtons.OKCancel,
+                deleteFiles ? MessageBoxIcon.Warning : MessageBoxIcon.Question) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _ = Task.Run(() => _engine.RemoveAsync(infoHash, deleteFiles));
+    }
+
+    private void OpenFolder(InfoHash infoHash)
+    {
+        if (_engine.Find(infoHash) is not { } session)
+        {
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = session.State.SavePath,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception e)
+        {
+            Note($"could not open the folder: {e.Message}");
+        }
+    }
+
+    // -------------------------------------------------------------- the drawing
+
+    private void OnTick()
+    {
+        RefreshList();
+        RefreshDetail();
+    }
+
+    private void RefreshList()
+    {
+        List<TorrentRow> rows = [];
+
+        foreach (TorrentSession session in _engine.Torrents)
+        {
+            DownloadProgress? progress = session.Download?.Snapshot();
+            (double down, double up) = Sample(session);
+            _rates[session.InfoHash] = (down, up);
+
+            rows.Add(new TorrentRow(
+                session.InfoHash,
+                session.Name,
+                session.Torrent.TotalLength,
+                session.Fraction,
+                StatusText(session),
+                StatusColour(session),
+                down,
+                up,
+                progress?.ConnectedPeers ?? 0));
+        }
+
+        _list.Set(rows);
+    }
+
+    private static string StatusText(TorrentSession session) => session.Status switch
+    {
+        TorrentStatus.Checking => "checking",
+        TorrentStatus.Seeding => "seeding",
+        TorrentStatus.Error => "error",
+        _ => session.Download?.Snapshot().ConnectedPeers > 0 ? "downloading" : "finding peers",
+    };
+
+    private static Color StatusColour(TorrentSession session) => session.Status switch
+    {
+        TorrentStatus.Checking => Theme.Warning,
+        TorrentStatus.Seeding => Theme.Upload,
+        TorrentStatus.Error => Color.FromArgb(0xE0, 0x6C, 0x6C),
+        _ => Theme.TextSecondary,
+    };
+
+    /// <summary>
+    /// Bytes a second since the last look. Kept per torrent, because a rate
+    /// worked out from a total divided by how long the client has been running
+    /// is an average, not a speed.
+    /// </summary>
+    private (double Down, double Up) Sample(TorrentSession session)
+    {
+        long downloaded = session.Download?.Downloaded ?? 0;
+        long uploaded = session.Uploaded;
+        DateTime now = DateTime.UtcNow;
+
+        if (!_lastSample.TryGetValue(session.InfoHash, out (long Down, long Up, DateTime At) last))
+        {
+            _lastSample[session.InfoHash] = (downloaded, uploaded, now);
+            return (0, 0);
+        }
+
+        double seconds = Math.Max((now - last.At).TotalSeconds, 0.001);
+        _lastSample[session.InfoHash] = (downloaded, uploaded, now);
+
+        return (Math.Max(0, (downloaded - last.Down) / seconds), Math.Max(0, (uploaded - last.Up) / seconds));
+    }
+
+    private void OnSelectionChanged()
+    {
+        _graph.Clear();
+        _map.Clear();
+        RefreshDetail();
+    }
+
+    private void RefreshDetail()
+    {
+        TorrentSession? session = _list.Selected is { } selected ? _engine.Find(selected) : null;
+
+        if (session == null)
+        {
+            _map.Clear();
+            _peers.Set([]);
+            _stats.Set(
+                ("torrents", $"{_engine.Torrents.Count}", Theme.TextSecondary),
+                ("dht", $"{_engine.Dht?.Table.Count ?? 0:N0}", Theme.TextSecondary),
+                ("peers", $"{_engine.Budget.InUse}/{_engine.Budget.Total}", Theme.TextSecondary));
+            return;
+        }
+
+        if (session.Download is not { } download)
+        {
+            _stats.Set(
+                ("status", "checking", Theme.Warning),
+                ("hashed", $"{session.CheckedFraction * 100:N0}%", Theme.Warning));
+            return;
+        }
+
+        DownloadProgress progress = download.Snapshot();
+
+        // The list worked the rate out a moment ago; sampling again here would
+        // divide a few bytes by a few microseconds and produce nonsense.
+        (double down, double up) = _rates.GetValueOrDefault(session.InfoHash);
+
+        _map.SetPieces(progress.PieceCount, download.Have.Span, download.PiecesInProgress());
         _graph.Add(down, up);
 
-        long remaining = session.Torrent.TotalLength - downloaded;
+        long remaining = session.Torrent.TotalLength - download.Downloaded;
         string eta = progress.PiecesHeld == progress.PieceCount
             ? "seeding"
             : down > 1 ? Theme.Duration(TimeSpan.FromSeconds(remaining / down)) : "—";
@@ -469,7 +590,7 @@ internal sealed class MainForm : Form
             ("remaining", eta, Theme.TextSecondary),
             ("bad pieces", $"{progress.FailedPieces:N0}", progress.FailedPieces > 0 ? Theme.Warning : Theme.TextMuted));
 
-        _peers.Set(session.Download.Peers().Select(peer => new PeerRow(
+        _peers.Set(download.Peers().Select(peer => new PeerRow(
             peer.RemoteEndPoint.ToString(),
             peer.ClientName,
             peer.BytesPerSecond,
@@ -479,6 +600,8 @@ internal sealed class MainForm : Form
             peer.State.ChokedByPeer,
             peer.State.PeerInterested)));
     }
+
+    // ------------------------------------------------------------------ the rest
 
     private void Note(string text)
     {
@@ -512,6 +635,7 @@ internal sealed class MainForm : Form
             BackColor = Theme.Background,
             MinimizeBox = false,
             MaximizeBox = false,
+            Icon = Icon,
         };
 
         TextBox input = new()
@@ -524,7 +648,17 @@ internal sealed class MainForm : Form
             Font = Theme.UiFont,
         };
 
-        Button ok = new() { Text = "Open", DialogResult = DialogResult.OK, Location = new Point(414, 58), Size = new Size(112, 30), FlatStyle = FlatStyle.Flat, BackColor = Theme.SurfaceRaised, ForeColor = Theme.TextPrimary };
+        Button ok = new()
+        {
+            Text = "Add",
+            DialogResult = DialogResult.OK,
+            Location = new Point(414, 58),
+            Size = new Size(112, 30),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.SurfaceRaised,
+            ForeColor = Theme.TextPrimary,
+        };
+
         ok.FlatAppearance.BorderColor = Theme.Border;
 
         dialog.Controls.Add(input);
@@ -537,41 +671,9 @@ internal sealed class MainForm : Form
         return dialog.ShowDialog(this) == DialogResult.OK && input.Text.Length > 0 ? input.Text : null;
     }
 
-    private static string TablePath() => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Bitfield",
-        "dht.table");
-
     private void Shutdown()
     {
         _tick.Stop();
-
-        try
-        {
-            _dht?.Save(TablePath());
-        }
-        catch (IOException)
-        {
-            // Not worth holding up a window that is closing.
-        }
-
-        if (_mapping is { } mapping)
-        {
-            // Router mapping tables are small, and a client that leaves one
-            // behind per run eventually fills one.
-            try
-            {
-                PortMapping.RemoveAsync(mapping).Wait(TimeSpan.FromSeconds(3));
-            }
-            catch (Exception)
-            {
-                // A router that will not take it back is not worth waiting on.
-            }
-        }
-
-        _background?.Cancel();
-        _listener?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
-        _session?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(5));
-        _dht?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));
+        _engine.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(10));
     }
 }

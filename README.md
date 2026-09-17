@@ -17,7 +17,8 @@ torrent rather than in order, with the darker cells the ones in flight.
 
 ## Status
 
-Milestone 9 of 9. **It works, and it has a window.** A torrent is read —
+Milestone 10 of 13. **It works, it has a window, and it runs more than one
+torrent.** A torrent is read —
 from a file, or from nothing but its hash by asking the swarm for its
 description — its trackers answer over HTTP or UDP, the DHT finds peers with no
 tracker at all, a few dozen peers are kept busy at once, pieces are picked
@@ -26,11 +27,16 @@ straddles. An interrupted download picks up where it left off. Peers that
 connect are answered, blocks are served from disk, and the choking algorithm
 decides which few are worth answering.
 
-The window shows the piece map, the peers and the last two minutes of
-throughput, opens a torrent or a magnet link, holds either direction to a rate
-limit, and asks the router to forward its port.
+The window lists every torrent with its progress and status, shows the selected
+one in detail — piece map, peers, the last two minutes of throughput — adds
+torrents from files or magnet links, removes them with or without their
+content, holds every torrent together to a rate limit, and asks the router to
+forward its port. Torrents come back when the client is started again, seeding
+included.
 
-**405 offline checks pass**, covering the bencode reader and writer, the
+Still to come: pause, file priorities, and the notification area.
+
+**418 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
 tracker reply arrives in, the peer handshake and every wire message, the piece
 picker, the DHT's distance arithmetic, routing table and messages, and writing
@@ -130,6 +136,10 @@ say so rather than to look reassuring:
 | **7** | **UDP trackers, magnet, `ut_metadata`** | **Done — a magnet link downloads from scratch** |
 | **8** | **DHT** | **Done — peers found with no tracker involved** |
 | **9** | **The window: piece map, peers, graphs, rate limits, UPnP** | **Done** |
+| **10** | **More than one torrent: add, remove, a list that survives a restart** | **Done** |
+| 11 | Status and pause: checking, downloading, seeding, paused, stopped | Pausing keeps the progress and does not rehash |
+| 12 | File priorities, including not downloading a file at all | A torrent is finished when every wanted piece is held |
+| 13 | Notification area, one instance, settings, about | — |
 
 ## Building
 
@@ -149,6 +159,21 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### The engine is not the window
+
+A torrent client spends most of its life with nobody looking at it, so anything
+the window owns is something that has to stay open for the downloads to keep
+running. The engine — the torrents, the DHT node, the listening port, the
+limits they share — is its own object, and the window reads a snapshot of it on
+a timer. That is what the notification area needs later, and it is also why one
+badly behaved control cannot take a download down with it.
+
+The list of torrents lives beside the client rather than beside the downloads:
+three files per torrent in the client's own folder, holding the metainfo, the
+resume data and where the content is going. A torrent added from a magnet link
+never had a file to be re-opened from, so its info dictionary is written out as
+the torrent file it would have been — the same bytes, so the same infohash.
 
 ### The routing table is worth nothing without its id
 

@@ -119,9 +119,16 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
     /// client that saturates a line is a client its user turns off, and on a
     /// tracker that keeps ratios the upload limit is the one that matters.
     /// </summary>
-    public RateLimiter DownloadLimit { get; } = new();
+    public RateLimiter DownloadLimit { get; init; } = new();
 
-    public RateLimiter UploadLimit { get; } = new();
+    public RateLimiter UploadLimit { get; init; } = new();
+
+    /// <summary>
+    /// The connection budget this torrent draws from, shared with every other
+    /// torrent running. Its own <see cref="MaxPeers"/> still applies on top, so
+    /// one torrent cannot spend the whole budget while others go without.
+    /// </summary>
+    public PeerBudget? Budget { get; init; }
 
     /// <summary>How often to ask the DHT again for more peers.</summary>
     public TimeSpan DhtInterval { get; init; } = TimeSpan.FromMinutes(10);
@@ -342,6 +349,14 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
                     continue;
                 }
 
+                // Every torrent draws from the same budget. One that cannot get
+                // a connection now simply asks again next round, which shares
+                // the budget out well enough without anybody queueing.
+                if (Budget != null && !Budget.TryTake())
+                {
+                    break;
+                }
+
                 Interlocked.Increment(ref _connecting);
                 _ = RunPeerAsync(peer, cancellationToken);
             }
@@ -392,6 +407,8 @@ public sealed class TorrentDownload : IPieceReceiver, IBlockSource
         }
         finally
         {
+            Budget?.Return();
+
             if (!connected)
             {
                 Interlocked.Decrement(ref _connecting);
