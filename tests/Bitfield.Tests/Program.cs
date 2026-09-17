@@ -34,6 +34,7 @@ MetainfoTests.Run((name, pass, detail) => Check(name, pass, detail));
 TorrentFileTests.Run((name, pass, detail) => Check(name, pass, detail));
 TrackerTests.Run((name, pass, detail) => Check(name, pass, detail));
 PeerProtocolTests.Run((name, pass, detail) => Check(name, pass, detail));
+StorageTests.Run((name, pass, detail) => Check(name, pass, detail));
 
 Console.WriteLine();
 Console.WriteLine($"{total - failures}/{total} checks passed.");
