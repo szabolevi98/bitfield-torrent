@@ -85,7 +85,7 @@ internal static class MagnetTests
         AnnounceRequest request = new()
         {
             InfoHash = InfoHash.Parse(DebianInfoHash),
-            PeerId = new PeerId(Encoding.ASCII.GetBytes("-BF0100-abcdefghijkl")),
+            PeerId = new PeerId(Encoding.ASCII.GetBytes("-BF1000-abcdefghijkl")),
             Port = 6881,
             Downloaded = 1_000,
             Left = 2_000,
@@ -125,7 +125,7 @@ internal static class MagnetTests
             announceSeen != null && Convert.ToHexStringLower(announceSeen.AsSpan(16, 20)) == DebianInfoHash,
             announceSeen == null ? "" : Convert.ToHexStringLower(announceSeen.AsSpan(16, 20)));
         check("udp tracker: the peer id at 36",
-            announceSeen != null && Encoding.ASCII.GetString(announceSeen, 36, 20) == "-BF0100-abcdefghijkl", "");
+            announceSeen != null && Encoding.ASCII.GetString(announceSeen, 36, 20) == "-BF1000-abcdefghijkl", "");
         check("udp tracker: the counters at 56, 64 and 72",
             announceSeen != null
             && BinaryPrimitives.ReadInt64BigEndian(announceSeen.AsSpan(56)) == 1_000

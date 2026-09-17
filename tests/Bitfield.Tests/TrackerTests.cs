@@ -31,11 +31,11 @@ internal static class TrackerTests
         string text = generated.ToString();
 
         check("peer id: twenty bytes", generated.ToArray().Length == 20, "");
-        check("peer id: names this client", text.StartsWith("-BF0100-", StringComparison.Ordinal), text);
+        check("peer id: names this client", text.StartsWith("-BF1000-", StringComparison.Ordinal), text);
         check("peer id: the tail is random",
             PeerId.Generate() != PeerId.Generate(), "two generated ids came out the same");
         check("peer id: reads back its own client name",
-            generated.ClientName() == "Bitfield 0.1.0", generated.ClientName());
+            generated.ClientName() == "Bitfield 1.0.0", generated.ClientName());
 
         // Other clients' ids are what a peer list will mostly be made of.
         check("peer id: recognises qBittorrent",
@@ -57,7 +57,7 @@ internal static class TrackerTests
         AnnounceRequest request = new()
         {
             InfoHash = InfoHash.Parse(DebianInfoHash),
-            PeerId = Id("-BF0100-abcdefghijkl"),
+            PeerId = Id("-BF1000-abcdefghijkl"),
             Port = 6881,
             Left = 792_723_456,
             Event = TrackerEvent.Started,
@@ -72,7 +72,7 @@ internal static class TrackerTests
         const string expected =
             "http://bttracker.debian.org:6969/announce"
             + "?info_hash=z%CF%8F%B5%90%B2%06%0D%D9%C3%14n%F7p%16%9DY43%B0"
-            + "&peer_id=-BF0100-abcdefghijkl"
+            + "&peer_id=-BF1000-abcdefghijkl"
             + "&port=6881&uploaded=0&downloaded=0&left=792723456&compact=1&event=started";
 
         check("announce url: built byte for byte", uri.AbsoluteUri == expected, uri.AbsoluteUri);
