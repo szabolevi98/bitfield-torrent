@@ -57,18 +57,25 @@ internal static class TestTorrents
     }
 
     /// <summary>A single-file torrent, which takes the simpler layout.</summary>
-    public static Built BuildSingle(string name, int length, int pieceLength = 16 * 1024, int seed = 1)
+    public static Built BuildSingle(
+        string name,
+        int length,
+        int pieceLength = 16 * 1024,
+        int seed = 1,
+        string? announce = "http://tracker.example/announce")
     {
         byte[] content = new byte[length];
         new Random(seed).NextBytes(content);
 
-        BDictionary torrent = Dictionary(
-            ("announce", new BString("http://tracker.example/announce")),
-            ("info", Dictionary(
-                ("length", new BInteger(length)),
-                ("name", new BString(name)),
-                ("piece length", new BInteger(pieceLength)),
-                ("pieces", new BString(PieceHashes(content, pieceLength))))));
+        BDictionary info = Dictionary(
+            ("length", new BInteger(length)),
+            ("name", new BString(name)),
+            ("piece length", new BInteger(pieceLength)),
+            ("pieces", new BString(PieceHashes(content, pieceLength))));
+
+        BDictionary torrent = announce == null
+            ? Dictionary(("info", info))
+            : Dictionary(("announce", new BString(announce)), ("info", info));
 
         byte[] file = BencodeWriter.Encode(torrent);
         return new Built(Metainfo.Parse(file), content, file);

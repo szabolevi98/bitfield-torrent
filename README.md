@@ -11,18 +11,27 @@ download proceeds.
 
 ## Status
 
-Milestone 5 of 9. **It downloads.** A torrent is read, its tracker answers, a
-few dozen peers are kept busy at once, pieces are picked rarest first, and
-every piece that verifies is written across the files it straddles. An
-interrupted download picks up where it left off. Nothing is uploaded yet, and
-the window opens and is empty.
+Milestone 6 of 9. **It downloads and it shares.** A torrent is read, its
+tracker answers, a few dozen peers are kept busy at once, pieces are picked
+rarest first, and every piece that verifies is written across the files it
+straddles. An interrupted download picks up where it left off. Peers that
+connect are answered, blocks are served from disk, and the choking algorithm
+decides which few are worth answering. Still to come: UDP trackers, magnet
+links and the DHT — and the window opens and is empty.
 
-**326 offline checks pass**, covering the bencode reader and writer, the
+**334 offline checks pass**, covering the bencode reader and writer, the
 metainfo model, the announce request down to its exact bytes, every shape a
 tracker reply arrives in, the peer handshake and every wire message, the piece
 picker, and writing pieces across file boundaries — plus three real torrent
 files whose infohashes, piece counts and lengths are matched against values
 derived with a separate implementation.
+
+Among them is a swarm of this client talking to itself over loopback: a seed
+and two leechers, and then **a third leecher that finishes with the seed
+removed from the swarm entirely**, served only by the two peers that had just
+downloaded it themselves. That needs the uploading side, the choking algorithm
+and incoming connections all to be right at once. It takes about a second and
+runs on every build.
 
 Against the live swarm, on 2026-09-17:
 
@@ -96,7 +105,7 @@ say so rather than to look reassuring:
 | **3** | **One peer, one piece** | **Done — a single piece downloads and its SHA-1 verifies** |
 | **4** | **Full download, multi-file, resume** | **Done — an ISO's published SHA-256 matches** |
 | **5** | **Piece picker, pipelining, many peers** | **Done — sustained throughput on a real swarm** |
-| 6 | Seeding and choking | The local swarm test passes |
+| **6** | **Seeding and choking** | **Done — the local swarm test passes** |
 | 7 | UDP trackers, magnet, `ut_metadata` | A magnet link downloads from scratch |
 | 8 | DHT | Peers found with no tracker involved |
 | 9 | The window: piece map, peers, graphs, rate limits, UPnP | — |
@@ -119,6 +128,15 @@ tests/Bitfield.Tests offline checks
 ```
 
 ## Notes
+
+### Why the swarm test removes the seed
+
+A client can be made to download from a peer that has everything without most
+of it working: no uploading, no choking, nothing listening. The test therefore
+has a second phase. The seed is shut down, and a fresh leecher is pointed at
+the two peers that just finished — so the only copies left in the swarm are the
+ones this client produced and is now serving. It completes, and its bytes match
+the original.
 
 ### What rarest first did and did not do
 

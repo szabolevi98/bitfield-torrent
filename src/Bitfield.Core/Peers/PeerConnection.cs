@@ -49,6 +49,9 @@ public sealed class PeerConnection : IAsyncDisposable
 
     public ReservedBits RemoteReserved { get; }
 
+    /// <summary>Whether the peer connected here, rather than the other way round.</summary>
+    public bool IsIncoming { get; init; }
+
     /// <summary>
     /// Connects and exchanges handshakes. Both sides send theirs at once rather
     /// than taking turns, so the exchange costs one round trip rather than two.
@@ -92,7 +95,55 @@ public sealed class PeerConnection : IAsyncDisposable
                     $"the peer answered for torrent {theirs.InfoHash}, not {infoHash}");
             }
 
-            return new PeerConnection(socket, peer, theirs);
+            return new PeerConnection(socket, peer, theirs) { IsIncoming = false };
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Takes over a socket somebody else connected to us.
+    ///
+    /// The order is the other way round from an outgoing connection: the peer
+    /// names the torrent first, and only then can this side know which infohash
+    /// to answer with. <paramref name="resolve"/> is given the infohash and
+    /// returns the peer id to answer as, or null for a torrent this client is
+    /// not running — which is a connection to close rather than one to fake an
+    /// answer for.
+    /// </summary>
+    public static async Task<PeerConnection> AcceptAsync(
+        Socket socket,
+        Func<InfoHash, PeerId?> resolve,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            socket.NoDelay = true;
+            NetworkStream stream = new(socket, ownsSocket: false);
+
+            byte[] incoming = new byte[PeerHandshake.Size];
+            await stream.ReadExactlyAsync(incoming, cancellationToken).ConfigureAwait(false);
+
+            PeerHandshake theirs = PeerHandshake.Parse(incoming);
+
+            if (resolve(theirs.InfoHash) is not { } peerId)
+            {
+                throw new PeerProtocolException($"the peer asked for torrent {theirs.InfoHash}, which is not running here");
+            }
+
+            PeerHandshake ours = new()
+            {
+                InfoHash = theirs.InfoHash,
+                PeerId = peerId,
+                Reserved = ReservedBits.Ours,
+            };
+
+            await stream.WriteAsync(ours.ToArray(), cancellationToken).ConfigureAwait(false);
+
+            return new PeerConnection(socket, (IPEndPoint)socket.RemoteEndPoint!, theirs) { IsIncoming = true };
         }
         catch
         {

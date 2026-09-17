@@ -25,6 +25,12 @@ public sealed record DownloadProgress
 
     public int FailedPieces { get; init; }
 
+    /// <summary>Peers that have said they want something this client holds.</summary>
+    public int InterestedPeers { get; init; }
+
+    /// <summary>Peers this client is currently answering.</summary>
+    public int UnchokedPeers { get; init; }
+
     /// <summary>The fastest single peer, in bytes per second.</summary>
     public double FastestPeer { get; init; }
 
@@ -42,7 +48,7 @@ public sealed record DownloadProgress
 /// Runs one torrent: finds peers, keeps a set of connections busy, writes what
 /// verifies, and stops when there is nothing left to want.
 /// </summary>
-public sealed class TorrentDownload : IPieceReceiver
+public sealed class TorrentDownload : IPieceReceiver, IBlockSource
 {
     private readonly Metainfo _torrent;
     private readonly TorrentStorage _storage;
@@ -56,6 +62,7 @@ public sealed class TorrentDownload : IPieceReceiver
     private readonly Lock _writeGate = new();
 
     private long _downloaded;
+    private long _uploadedByClosedPeers;
     private int _failedPieces;
     private int _connecting;
 
@@ -76,8 +83,27 @@ public sealed class TorrentDownload : IPieceReceiver
     /// <summary>How many connections to keep open at once.</summary>
     public int MaxPeers { get; init; } = 30;
 
-    /// <summary>The port announced to trackers. Nothing listens on it yet.</summary>
+    /// <summary>The port announced to trackers, where incoming peers are accepted.</summary>
     public int Port { get; init; } = 6881;
+
+    /// <summary>
+    /// Keep the torrent running after it completes, serving it to others.
+    /// Without this the download stops as soon as it has everything, which is
+    /// what a one-off fetch wants and what a swarm cannot afford.
+    /// </summary>
+    public bool KeepSeeding { get; init; }
+
+    /// <summary>
+    /// How often the choking algorithm reconsiders. Ten seconds in the wild,
+    /// slow enough that a peer cannot game its way into a slot by being briefly
+    /// generous; a test swarm sets it far shorter because there it only has to
+    /// happen at all.
+    /// </summary>
+    public TimeSpan ChokeInterval { get; init; } = TimeSpan.FromSeconds(10);
+
+    public InfoHash InfoHash => _torrent.InfoHash;
+
+    public PeerId PeerId => _peerId;
 
     public event Action<DownloadProgress>? Progress;
 
@@ -89,6 +115,12 @@ public sealed class TorrentDownload : IPieceReceiver
 
     public long Downloaded => Interlocked.Read(ref _downloaded);
 
+    public long Uploaded =>
+        Interlocked.Read(ref _uploadedByClosedPeers) + _sessions.Values.Sum(session => session.Uploaded);
+
+    /// <summary>Adds a peer found somewhere other than a tracker.</summary>
+    public void AddPeer(IPEndPoint peer) => _known.TryAdd(peer, 0);
+
     public DownloadProgress Snapshot() => new()
     {
         PiecesHeld = _picker.Have.SetCount,
@@ -98,6 +130,8 @@ public sealed class TorrentDownload : IPieceReceiver
         ConnectedPeers = _sessions.Count,
         BytesPerSecond = Downloaded / Math.Max(_clock.Elapsed.TotalSeconds, 0.001),
         FailedPieces = _failedPieces,
+        InterestedPeers = _sessions.Values.Count(s => s.State.PeerInterested),
+        UnchokedPeers = _sessions.Values.Count(s => !s.State.ChokingPeer),
         FastestPeer = _sessions.IsEmpty ? 0 : _sessions.Values.Max(s => s.BytesPerSecond),
         MostRequestsInFlight = _sessions.IsEmpty ? 0 : _sessions.Values.Max(s => s.RequestsInFlight),
     };
@@ -109,13 +143,16 @@ public sealed class TorrentDownload : IPieceReceiver
 
         using CancellationTokenSource finished = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        Task announcing = AnnounceLoopAsync(tracker, tiers, finished.Token);
+        Task announcing = tiers.Count > 0
+            ? AnnounceLoopAsync(tracker, tiers, finished.Token)
+            : Task.CompletedTask;
         Task connecting = ConnectLoopAsync(finished.Token);
         Task reporting = ReportLoopAsync(finished.Token);
+        Task choking = ChokeLoopAsync(finished.Token);
 
         try
         {
-            while (!_picker.IsComplete)
+            while (!_picker.IsComplete || KeepSeeding)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 await Task.Delay(200, cancellationToken).ConfigureAwait(false);
@@ -124,14 +161,21 @@ public sealed class TorrentDownload : IPieceReceiver
         finally
         {
             await finished.CancelAsync().ConfigureAwait(false);
-            await Task.WhenAll(Quietly(announcing), Quietly(connecting), Quietly(reporting)).ConfigureAwait(false);
+            await Task.WhenAll(
+                Quietly(announcing),
+                Quietly(connecting),
+                Quietly(reporting),
+                Quietly(choking)).ConfigureAwait(false);
 
             SaveResume();
 
             // The tracker is told the download finished, which is what a ratio
             // is credited from on the trackers that keep one.
-            await TellTrackerAsync(tracker, tiers, TrackerEvent.Completed, CancellationToken.None)
-                .ConfigureAwait(false);
+            if (tiers.Count > 0)
+            {
+                await TellTrackerAsync(tracker, tiers, TrackerEvent.Completed, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
         }
     }
 
@@ -242,7 +286,7 @@ public sealed class TorrentDownload : IPieceReceiver
                 .ConnectAsync(peer, _torrent.InfoHash, _peerId, connecting.Token)
                 .ConfigureAwait(false);
 
-            PeerSession session = new(connection, _torrent, _picker, this);
+            PeerSession session = new(connection, _torrent, _picker, this, this);
             _sessions[peer] = session;
             Interlocked.Decrement(ref _connecting);
             connected = true;
@@ -260,7 +304,10 @@ public sealed class TorrentDownload : IPieceReceiver
                 Interlocked.Decrement(ref _connecting);
             }
 
-            _sessions.TryRemove(peer, out _);
+            if (_sessions.TryRemove(peer, out PeerSession? closing))
+            {
+                Interlocked.Add(ref _uploadedByClosedPeers, closing.Uploaded);
+            }
 
             if (connection != null)
             {
@@ -268,6 +315,109 @@ public sealed class TorrentDownload : IPieceReceiver
             }
         }
     }
+
+    /// <summary>
+    /// Takes over a connection a peer made to this client. The handshake has
+    /// already happened; from here an incoming peer is no different from one
+    /// this client dialled.
+    /// </summary>
+    public async Task AcceptAsync(PeerConnection connection, CancellationToken cancellationToken)
+    {
+        IPEndPoint peer = connection.RemoteEndPoint;
+
+        try
+        {
+            PeerSession session = new(connection, _torrent, _picker, this, this);
+            _sessions[peer] = session;
+
+            await session.RunAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // A peer that stops talking is ordinary.
+        }
+        finally
+        {
+            if (_sessions.TryRemove(peer, out PeerSession? closing))
+            {
+                Interlocked.Add(ref _uploadedByClosedPeers, closing.Uploaded);
+            }
+
+            await connection.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The choking algorithm, which decides the few peers worth answering.
+    ///
+    /// Tit for tat: every ten seconds the peers that have given the most are
+    /// unchoked and everyone else is choked. Four slots, because answering
+    /// everybody at once means answering everybody slowly.
+    ///
+    /// On its own that would be a closed shop — a peer this client has never
+    /// answered can never prove it is worth answering, and a client that has
+    /// just started has nothing to offer anyone. So every third round one
+    /// interested peer is unchoked at random regardless of what it has given.
+    /// That is how a new client gets its first piece, and how the swarm
+    /// discovers connections that turn out to be better than the ones in use.
+    /// </summary>
+    private async Task ChokeLoopAsync(CancellationToken cancellationToken)
+    {
+        const int UnchokeSlots = 4;
+        const int OptimisticEveryRounds = 3;
+
+        for (int round = 0; !cancellationToken.IsCancellationRequested; round++)
+        {
+            try
+            {
+                await Task.Delay(ChokeInterval, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            PeerSession[] interested = [.. _sessions.Values.Where(session => session.State.PeerInterested)];
+
+            // While still downloading, a peer is judged by what it sends here;
+            // once complete there is nothing left to judge but what it takes,
+            // which is what keeps a seed's bandwidth going to the peers that
+            // can actually use it.
+            bool seeding = _picker.IsComplete;
+
+            HashSet<PeerSession> unchoked =
+            [
+                .. interested
+                    .OrderByDescending(session => seeding ? session.UploadBytesPerSecond : session.BytesPerSecond)
+                    .Take(UnchokeSlots),
+            ];
+
+            if (round % OptimisticEveryRounds == 0)
+            {
+                PeerSession[] rest = [.. interested.Where(session => !unchoked.Contains(session))];
+                if (rest.Length > 0)
+                {
+                    unchoked.Add(rest[Random.Shared.Next(rest.Length)]);
+                }
+            }
+
+            foreach (PeerSession session in _sessions.Values)
+            {
+                try
+                {
+                    await session.SetChokingAsync(!unchoked.Contains(session), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // A peer that has gone away needs no telling.
+                }
+            }
+        }
+    }
+
+    public Task ReadBlockAsync(BlockRequest block, Memory<byte> buffer, CancellationToken cancellationToken) =>
+        _storage.ReadAsync(((long)block.Piece * _torrent.PieceLength) + block.Begin, buffer, cancellationToken);
 
     private async Task ReportLoopAsync(CancellationToken cancellationToken)
     {

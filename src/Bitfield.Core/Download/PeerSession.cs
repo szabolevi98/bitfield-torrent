@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using Bitfield.Core.Peers;
 using Bitfield.Core.Torrents;
@@ -13,10 +14,16 @@ public interface IPieceReceiver
     void PieceFailed(int piece, IPEndPoint peer);
 }
 
+/// <summary>Where a block comes from when a peer asks for one.</summary>
+public interface IBlockSource
+{
+    Task ReadBlockAsync(BlockRequest block, Memory<byte> buffer, CancellationToken cancellationToken);
+}
+
 /// <summary>
-/// One peer, driven for as long as it is useful: ask for a piece, keep several
-/// block requests outstanding so the connection is never idle for a round trip,
-/// hand over whatever verifies, and take the next one.
+/// One peer, in both directions: ask for a piece and keep several block
+/// requests outstanding so the connection is never idle for a round trip, and
+/// answer whatever the peer asks for while it is unchoked.
 /// </summary>
 public sealed class PeerSession
 {
@@ -34,10 +41,17 @@ public sealed class PeerSession
     /// <summary>
     /// How much of a second's worth of blocks to keep in flight. Requesting
     /// exactly one second's worth means the pipeline empties whenever the peer
-    /// speeds up; half again as much absorbs that without asking for more than
-    /// the peer can send before the requests go stale.
+    /// speeds up; half a second's absorbs that without asking for more than the
+    /// peer can send before the requests go stale.
     /// </summary>
     private const double SecondsInFlight = 0.5;
+
+    /// <summary>
+    /// The largest block this client will serve. Everything asks for 16 KiB;
+    /// anything much larger is either a broken client or an attempt to have
+    /// this one read a great deal of disk per request.
+    /// </summary>
+    private const int MaxServedBlock = 32 * 1024;
 
     private static readonly TimeSpan MessageTimeout = TimeSpan.FromSeconds(30);
 
@@ -45,10 +59,11 @@ public sealed class PeerSession
     private readonly Metainfo _torrent;
     private readonly PiecePicker _picker;
     private readonly IPieceReceiver _receiver;
+    private readonly IBlockSource? _blocks;
     private readonly PeerState _state;
 
     private readonly HashSet<int> _requested = [];
-    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
 
     private PieceAssembler? _piece;
     private int _outstanding;
@@ -59,12 +74,14 @@ public sealed class PeerSession
         PeerConnection connection,
         Metainfo torrent,
         PiecePicker picker,
-        IPieceReceiver receiver)
+        IPieceReceiver receiver,
+        IBlockSource? blocks = null)
     {
         _connection = connection;
         _torrent = torrent;
         _picker = picker;
         _receiver = receiver;
+        _blocks = blocks;
         _state = new PeerState(torrent.PieceCount);
     }
 
@@ -75,8 +92,14 @@ public sealed class PeerSession
     /// <summary>Bytes of verified piece data this peer contributed.</summary>
     public long Downloaded { get; private set; }
 
+    /// <summary>Bytes of block data served to this peer.</summary>
+    public long Uploaded { get; private set; }
+
     /// <summary>Blocks arriving per second, whether or not their pieces verified.</summary>
     public double BytesPerSecond => _blockBytes / Math.Max(_clock.Elapsed.TotalSeconds, 0.001);
+
+    /// <summary>Blocks served per second.</summary>
+    public double UploadBytesPerSecond => Uploaded / Math.Max(_clock.Elapsed.TotalSeconds, 0.001);
 
     /// <summary>
     /// How many requests this peer is worth keeping outstanding, from what it
@@ -99,12 +122,33 @@ public sealed class PeerSession
     public ValueTask AnnounceHaveAsync(int piece, CancellationToken cancellationToken) =>
         _connection.SendAsync(PeerMessage.Have(piece), cancellationToken);
 
+    /// <summary>
+    /// Chokes or unchokes this peer. Called by the choking algorithm, which
+    /// decides which few peers are worth answering at any moment.
+    /// </summary>
+    public async ValueTask SetChokingAsync(bool choking, CancellationToken cancellationToken)
+    {
+        if (choking == _state.ChokingPeer)
+        {
+            return;
+        }
+
+        _state.SetChoking(choking);
+        await _connection.SendAsync(choking ? PeerMessage.Choke : PeerMessage.Unchoke, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         try
         {
-            await _connection.SendAsync(PeerMessage.Interested, cancellationToken).ConfigureAwait(false);
-            _state.SetInterested(true);
+            // A client that already has everything wants nothing, and saying
+            // otherwise is a claim it would never follow up on.
+            if (!_picker.IsComplete)
+            {
+                await _connection.SendAsync(PeerMessage.Interested, cancellationToken).ConfigureAwait(false);
+                _state.SetInterested(true);
+            }
 
             // Peers want to know what this client already has, so that they can
             // decide whether it is worth anything to them.
@@ -114,7 +158,7 @@ public sealed class PeerSession
                     .ConfigureAwait(false);
             }
 
-            while (!cancellationToken.IsCancellationRequested && !_picker.IsComplete)
+            while (!cancellationToken.IsCancellationRequested)
             {
                 await FillPipelineAsync(cancellationToken).ConfigureAwait(false);
 
@@ -190,11 +234,61 @@ public sealed class PeerSession
             return;
         }
 
-        if (message.Id != MessageId.Piece)
+        switch (message.Id)
+        {
+            case MessageId.Request:
+                await ServeAsync(message.ReadRequest(), cancellationToken).ConfigureAwait(false);
+                return;
+
+            case MessageId.Cancel:
+                // Requests are answered as they arrive rather than queued, so
+                // by the time a cancel gets here the block has already gone.
+                // Nothing to undo.
+                return;
+
+            case MessageId.Piece:
+                await TakeBlockAsync(message, cancellationToken).ConfigureAwait(false);
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Answers a peer's request for a block. Every field is checked before a
+    /// byte is read: the request names an offset and a length that this client
+    /// would otherwise go and read from disk on the strength of a stranger's
+    /// say-so.
+    /// </summary>
+    private async Task ServeAsync(BlockRequest request, CancellationToken cancellationToken)
+    {
+        if (_blocks == null || _state.ChokingPeer)
         {
             return;
         }
 
+        if ((uint)request.Piece >= (uint)_torrent.PieceCount || !_picker.Have[request.Piece])
+        {
+            return;
+        }
+
+        int pieceLength = _torrent.PieceLengthAt(request.Piece);
+        if (request.Length is <= 0 or > MaxServedBlock
+            || request.Begin < 0
+            || request.Begin + request.Length > pieceLength)
+        {
+            return;
+        }
+
+        byte[] block = new byte[request.Length];
+        await _blocks.ReadBlockAsync(request, block, cancellationToken).ConfigureAwait(false);
+
+        await _connection.SendAsync(PeerMessage.Piece(request.Piece, request.Begin, block), cancellationToken)
+            .ConfigureAwait(false);
+
+        Uploaded += block.Length;
+    }
+
+    private async Task TakeBlockAsync(PeerMessage message, CancellationToken cancellationToken)
+    {
         (int index, int begin, ReadOnlyMemory<byte> block) = message.ReadPiece();
         _outstanding = Math.Max(0, _outstanding - 1);
         _blockBytes += block.Length;
@@ -229,6 +323,20 @@ public sealed class PeerSession
 
     private async Task FillPipelineAsync(CancellationToken cancellationToken)
     {
+        // Finishing the torrent mid-connection turns this side into a seed, and
+        // the peer is told so rather than left expecting requests that will
+        // never come.
+        if (_picker.IsComplete)
+        {
+            if (_state.InterestedInPeer)
+            {
+                _state.SetInterested(false);
+                await _connection.SendAsync(PeerMessage.NotInterested, cancellationToken).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
         if (!_state.CanRequest)
         {
             return;
