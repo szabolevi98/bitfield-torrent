@@ -11,9 +11,15 @@ download proceeds.
 
 ## Status
 
-Scaffold. The solution builds and the window opens; the transfer engine is not
-written yet. Nothing below is claimed as working until it has a measurement
-beside it.
+Milestone 1 of 9. Torrent files are read and identified correctly; nothing is
+transferred yet — there is no tracker client and no peer connection. The window
+opens and is empty.
+
+**149 offline checks pass**, covering the bencode reader and writer, the
+metainfo model, and three real torrent files whose infohashes, piece counts and
+lengths are matched against values derived with a separate implementation.
+
+Nothing below is claimed as working until it has a measurement beside it.
 
 ## Scope
 
@@ -62,7 +68,7 @@ say so rather than to look reassuring:
 
 | # | Milestone | Done when |
 |---|---|---|
-| 1 | Bencode, metainfo, infohash | Computed infohashes match real `.torrent` files |
+| **1** | **Bencode, metainfo, infohash** | **Done — computed infohashes match real `.torrent` files** |
 | 2 | HTTP tracker announce | A live peer list comes back |
 | 3 | One peer, one piece | A single piece downloads and its SHA-1 verifies |
 | 4 | Full download, multi-file, resume | An ISO's published SHA-256 matches |
@@ -88,6 +94,24 @@ src/Bitfield.Core    protocol, piece selection, storage, DHT
 src/Bitfield         the Windows Forms application
 tests/Bitfield.Tests offline checks
 ```
+
+## Notes
+
+### Why the info dictionary is kept as bytes
+
+A torrent's identity is the SHA-1 of its info dictionary, taken over the bytes
+as they appear in the file. Parsing that dictionary and hashing a re-encoding of
+it looks equivalent and is not: a file may carry keys this client has never
+heard of, or carry them in an order it would not have chosen, and either
+difference produces a hash that no peer and no tracker recognises. So the parser
+records the byte range of every value it reads, and the infohash is taken
+straight from the file.
+
+The checks hold it to that from both sides: every real torrent file re-encodes
+to the same bytes it came from, and a synthetic torrent with unsorted and
+unknown keys in its info dictionary keeps its own identity rather than a tidied
+one.
+
 
 ## License
 

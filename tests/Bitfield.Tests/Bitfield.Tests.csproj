@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Bitfield.Core\Bitfield.Core.csproj" />
+    <EmbeddedResource Include="Fixtures\*.torrent" LogicalName="%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

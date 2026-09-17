@@ -1,7 +1,9 @@
 // Offline checks. Everything that can be decided without a network — bencode
-// round-trips, infohash values, the piece picker, the choking algorithm against
-// a simulated transport — is answered here, and the exit code says whether it
-// held. Tests that need real peers live in the swarm runner instead.
+// round-trips, infohash values, and later the piece picker and the choking
+// algorithm against a simulated transport — is answered here, and the exit code
+// says whether it held. Checks that need real peers live in the swarm runner.
+
+using Bitfield.Tests;
 
 int failures = 0;
 int total = 0;
@@ -20,8 +22,9 @@ void Check(string name, bool condition, string detail = "")
     }
 }
 
-// Checks are added milestone by milestone; the first set covers bencode.
-_ = (Action<string, bool, string>)Check;
+BencodeTests.Run((name, pass, detail) => Check(name, pass, detail));
+MetainfoTests.Run((name, pass, detail) => Check(name, pass, detail));
+TorrentFileTests.Run((name, pass, detail) => Check(name, pass, detail));
 
 Console.WriteLine();
 Console.WriteLine($"{total - failures}/{total} checks passed.");
