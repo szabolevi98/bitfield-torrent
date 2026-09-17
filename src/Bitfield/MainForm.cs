@@ -31,9 +31,9 @@ internal sealed class MainForm : Form
     private readonly ListBox _log = new();
     private readonly System.Windows.Forms.Timer _tick = new() { Interval = 500 };
 
-    private Button? _pauseButton;
-    private readonly TextBox _downLimit = new();
-    private readonly TextBox _upLimit = new();
+    private readonly StatusBarControl _status = new();
+    private ToolStripMenuItem? _torrentMenu;
+    private ToolStripMenuItem? _pauseItem;
     private readonly List<string> _notes = [];
 
     private readonly Dictionary<InfoHash, (long Down, long Up, DateTime At)> _lastSample = [];
@@ -65,6 +65,15 @@ internal sealed class MainForm : Form
 
         _list.SelectionChanged += () => BeginInvoke(OnSelectionChanged);
         _list.RowMenu += (infoHash, point) => ShowRowMenu(infoHash, point);
+
+        _list.SetSort((TorrentColumn)_engine.Settings.SortColumn, _engine.Settings.SortDescending);
+        _list.SortChanged += () => _engine.UpdateSettings(_engine.Settings with
+        {
+            SortColumn = (int)_list.SortColumn,
+            SortDescending = _list.SortDescending,
+        });
+
+        _status.SetLimits(_engine.Settings.DownloadLimitKb, _engine.Settings.UploadLimitKb);
 
         _tick.Tick += (_, _) => OnTick();
         _tick.Start();
@@ -192,8 +201,7 @@ internal sealed class MainForm : Form
         }
 
         _engine.UpdateSettings(settings.Result);
-        _downLimit.Text = settings.Result.DownloadLimitKb.ToString();
-        _upLimit.Text = settings.Result.UploadLimitKb.ToString();
+        _status.SetLimits(settings.Result.DownloadLimitKb, settings.Result.UploadLimitKb);
         Note("settings saved");
     }
 
@@ -310,8 +318,12 @@ internal sealed class MainForm : Form
         Controls.Add(statsHost);
         Controls.Add(splitter);
         Controls.Add(listHost);
-        Controls.Add(BuildHeader());
         Controls.Add(BuildLog());
+        Controls.Add(BuildStatusBar());
+
+        MenuStrip menu = BuildMenu();
+        Controls.Add(menu);
+        MainMenuStrip = menu;
     }
 
     /// <summary>
@@ -383,47 +395,75 @@ internal sealed class MainForm : Form
         _engine.SetPriorities(selected, priorities);
     }
 
-    private Control BuildHeader()
+    /// <summary>
+    /// The menu. A row of buttons across the top is what a program looks like
+    /// before it has decided what it is; the actions belong in one place with
+    /// their shortcuts written beside them.
+    /// </summary>
+    private MenuStrip BuildMenu()
     {
-        Panel header = new() { Dock = DockStyle.Top, Height = 56, BackColor = Theme.Background, Padding = new Padding(12, 8, 12, 0) };
-
-        // The limits go in a panel docked to the right rather than placed at a
-        // computed offset: a position worked out from the form's width is wrong
-        // the moment anything around it has padding, which is how they ended up
-        // off the edge of the window the first time.
-        FlowLayoutPanel limits = new()
+        MenuStrip menu = new()
         {
-            Dock = DockStyle.Right,
-            FlowDirection = FlowDirection.LeftToRight,
-            AutoSize = true,
+            Dock = DockStyle.Top,
             BackColor = Theme.Background,
-            WrapContents = false,
-            Padding = new Padding(0, 2, 0, 0),
+            ForeColor = Theme.TextPrimary,
+            Font = Theme.UiFont,
+            Renderer = new DarkMenuRenderer(),
+            Padding = new Padding(8, 2, 0, 2),
         };
 
-        limits.Controls.Add(Limit(_downLimit, "down KB/s"));
-        limits.Controls.Add(Limit(_upLimit, "up KB/s"));
-
-        FlowLayoutPanel buttons = new()
+        ToolStripMenuItem file = new("&File");
+        file.DropDownItems.Add(Item("Add torrent…", Keys.Control | Keys.O, OpenTorrent));
+        file.DropDownItems.Add(Item("Add magnet link…", Keys.Control | Keys.N, OpenMagnet));
+        file.DropDownItems.Add(new ToolStripSeparator());
+        file.DropDownItems.Add(Item("Exit", Keys.None, () =>
         {
-            Dock = DockStyle.Left,
-            FlowDirection = FlowDirection.LeftToRight,
-            AutoSize = true,
-            BackColor = Theme.Background,
-            WrapContents = false,
-        };
+            _reallyClosing = true;
+            Close();
+        }));
 
-        buttons.Controls.Add(Button("Add torrent…", OpenTorrent));
-        buttons.Controls.Add(Button("Add magnet…", OpenMagnet));
-        buttons.Controls.Add(_pauseButton = Button("Pause", TogglePauseSelected));
-        buttons.Controls.Add(Button("Remove…", () => RemoveSelected(deleteFiles: false)));
-        buttons.Controls.Add(Button("Settings…", OpenSettings));
-        buttons.Controls.Add(Button("About", ShowAbout));
+        _torrentMenu = new ToolStripMenuItem("&Torrent");
+        _pauseItem = Item("Pause", Keys.None, TogglePauseSelected);
+        _torrentMenu.DropDownItems.Add(_pauseItem);
+        _torrentMenu.DropDownItems.Add(Item("Open containing folder", Keys.None, () =>
+        {
+            if (_list.Selected is { } selected)
+            {
+                OpenFolder(selected);
+            }
+        }));
 
-        header.Controls.Add(buttons);
-        header.Controls.Add(limits);
+        _torrentMenu.DropDownItems.Add(new ToolStripSeparator());
+        _torrentMenu.DropDownItems.Add(Item("Select all", Keys.Control | Keys.A, _list.SelectAll));
+        _torrentMenu.DropDownItems.Add(new ToolStripSeparator());
+        _torrentMenu.DropDownItems.Add(Item("Remove…", Keys.Delete, () => RemoveSelected(deleteFiles: false)));
+        _torrentMenu.DropDownItems.Add(Item("Remove and delete files…", Keys.Shift | Keys.Delete,
+            () => RemoveSelected(deleteFiles: true)));
 
-        return header;
+        ToolStripMenuItem view = new("&View");
+        view.DropDownItems.Add(Item("Pieces", Keys.None, () => ShowTab(true)));
+        view.DropDownItems.Add(Item("Files", Keys.None, () => ShowTab(false)));
+
+        ToolStripMenuItem tools = new("T&ools");
+        tools.DropDownItems.Add(Item("Settings…", Keys.None, OpenSettings));
+
+        ToolStripMenuItem help = new("&Help");
+        help.DropDownItems.Add(Item("About Bitfield Torrent", Keys.None, ShowAbout));
+
+        menu.Items.AddRange([file, _torrentMenu, view, tools, help]);
+        return menu;
+    }
+
+    private static ToolStripMenuItem Item(string text, Keys shortcut, Action onClick)
+    {
+        ToolStripMenuItem item = new(text, null, (_, _) => onClick());
+
+        if (shortcut != Keys.None)
+        {
+            item.ShortcutKeys = shortcut;
+        }
+
+        return item;
     }
 
     private Control BuildLog()
@@ -436,9 +476,18 @@ internal sealed class MainForm : Form
         _log.Font = Theme.CaptionFont;
         _log.IntegralHeight = false;
 
-        Panel host = new() { Dock = DockStyle.Bottom, Height = 88, Padding = new Padding(12, 8, 12, 12), BackColor = Theme.Background };
+        Panel host = new() { Dock = DockStyle.Bottom, Height = 84, Padding = new Padding(12, 8, 12, 8), BackColor = Theme.Background };
         host.Controls.Add(_log);
         return host;
+    }
+
+    private Control BuildStatusBar()
+    {
+        _status.Dock = DockStyle.Bottom;
+        _status.LimitsChanged += (down, up) =>
+            _engine.UpdateSettings(_engine.Settings with { DownloadLimitKb = down, UploadLimitKb = up });
+
+        return _status;
     }
 
     private Button Button(string text, Action onClick)
@@ -462,50 +511,6 @@ internal sealed class MainForm : Form
 
         return button;
     }
-
-    /// <summary>
-    /// A rate limit box, applying to every torrent at once. Zero means no
-    /// limit, which is what both start at — throttling a client by default
-    /// would be a surprise.
-    /// </summary>
-    private Control Limit(TextBox box, string caption)
-    {
-        Panel panel = new()
-        {
-            Size = new Size(96, 40),
-            BackColor = Theme.Background,
-            Margin = new Padding(8, 0, 0, 0),
-        };
-
-        Label label = new()
-        {
-            Text = caption,
-            ForeColor = Theme.TextMuted,
-            Font = Theme.CaptionFont,
-            AutoSize = true,
-            Location = new Point(2, 0),
-        };
-
-        box.Text = "0";
-        box.Location = new Point(0, 15);
-        box.Width = 88;
-        box.BackColor = Theme.Surface;
-        box.ForeColor = Theme.TextPrimary;
-        box.BorderStyle = BorderStyle.FixedSingle;
-        box.Font = Theme.UiFont;
-        box.TextChanged += (_, _) =>
-        {
-            _engine.DownloadLimit.BytesPerSecond = Kilobytes(_downLimit.Text);
-            _engine.UploadLimit.BytesPerSecond = Kilobytes(_upLimit.Text);
-        };
-
-        panel.Controls.Add(label);
-        panel.Controls.Add(box);
-        return panel;
-    }
-
-    private static long Kilobytes(string text) =>
-        long.TryParse(text.Trim(), out long value) && value > 0 ? value * 1024 : 0;
 
     // ---------------------------------------------------------- adding torrents
 
@@ -643,6 +648,7 @@ internal sealed class MainForm : Form
             ForeColor = Theme.TextPrimary,
             Font = Theme.UiFont,
             ShowImageMargin = false,
+            Renderer = new DarkMenuRenderer(),
         };
 
         if (_engine.Find(infoHash) is { } session)
@@ -654,8 +660,8 @@ internal sealed class MainForm : Form
 
         menu.Items.Add("Open containing folder", null, (_, _) => OpenFolder(infoHash));
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Remove", null, (_, _) => Remove(infoHash, deleteFiles: false));
-        menu.Items.Add("Remove and delete files…", null, (_, _) => Remove(infoHash, deleteFiles: true));
+        menu.Items.Add("Remove", null, (_, _) => RemoveSelected(deleteFiles: false));
+        menu.Items.Add("Remove and delete files…", null, (_, _) => RemoveSelected(deleteFiles: true));
 
         menu.Show(_list, point);
     }
@@ -668,12 +674,43 @@ internal sealed class MainForm : Form
         }
     }
 
+    /// <summary>
+    /// Removes everything selected, asking once for the lot rather than once
+    /// per torrent — somebody who selected nine of them meant nine.
+    /// </summary>
     private void RemoveSelected(bool deleteFiles)
     {
-        if (_list.Selected is { } selected)
+        IReadOnlyList<InfoHash> selected = _list.SelectedAll;
+
+        if (selected.Count == 0)
         {
-            Remove(selected, deleteFiles);
+            return;
         }
+
+        if (selected.Count == 1)
+        {
+            Remove(selected[0], deleteFiles);
+            return;
+        }
+
+        string question = deleteFiles
+            ? $"Remove {selected.Count} torrents and delete everything they downloaded?\n\nThis cannot be undone."
+            : $"Remove {selected.Count} torrents?\n\nThe files they downloaded are left where they are.";
+
+        if (MessageBox.Show(this, question, deleteFiles ? "Remove and delete files" : "Remove torrents",
+                MessageBoxButtons.OKCancel,
+                deleteFiles ? MessageBoxIcon.Warning : MessageBoxIcon.Question) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            foreach (InfoHash infoHash in selected)
+            {
+                await _engine.RemoveAsync(infoHash, deleteFiles).ConfigureAwait(false);
+            }
+        });
     }
 
     /// <summary>
@@ -752,17 +789,26 @@ internal sealed class MainForm : Form
                 StatusColour(session),
                 down,
                 up,
-                progress?.ConnectedPeers ?? 0));
+                progress?.ConnectedPeers ?? 0,
+                session.State.AddedOn));
         }
 
         _list.Set(rows);
 
-        if (_pauseButton != null)
+        if (_pauseItem != null && _torrentMenu != null)
         {
             TorrentSession? selected = _list.Selected is { } infoHash ? _engine.Find(infoHash) : null;
-            _pauseButton.Text = selected?.Paused == true ? "Resume" : "Pause";
-            _pauseButton.Enabled = selected != null;
+            _pauseItem.Text = selected?.Paused == true ? "Resume" : "Pause";
+            _torrentMenu.Enabled = selected != null;
         }
+
+        _status.Set(
+            rows.Sum(row => row.Down),
+            rows.Sum(row => row.Up),
+            _engine.Budget.InUse,
+            _engine.Dht?.Table.Count ?? 0,
+            rows.Count,
+            _engine.Settings.UseUpnp);
     }
 
     private static string StatusText(TorrentSession session) => session.Status switch

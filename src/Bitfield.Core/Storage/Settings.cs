@@ -39,6 +39,15 @@ public sealed record Settings
 
     public bool NotifyOnComplete { get; init; } = true;
 
+    /// <summary>
+    /// Which column the torrent list is ordered by, and which way. Remembered
+    /// because a list that forgets how it was sorted every time the client
+    /// starts is a list somebody has to sort again every time.
+    /// </summary>
+    public int SortColumn { get; init; }
+
+    public bool SortDescending { get; init; }
+
     public static string PathFor(string root) => Path.Combine(root, "settings");
 
     public static Settings Load(string path)
@@ -65,6 +74,8 @@ public sealed record Settings
                 MinimiseToTray = Flag(saved, "minimise to tray", defaults.MinimiseToTray),
                 CloseToTray = Flag(saved, "close to tray", defaults.CloseToTray),
                 NotifyOnComplete = Flag(saved, "notify on complete", defaults.NotifyOnComplete),
+                SortColumn = Clamp(saved.GetInteger("sort column"), 0, 7, defaults.SortColumn),
+                SortDescending = Flag(saved, "sort descending", defaults.SortDescending),
             };
         }
         catch (Exception e) when (e is BencodeException or IOException)
@@ -86,6 +97,8 @@ public sealed record Settings
             ("notify on complete", new BInteger(NotifyOnComplete ? 1 : 0)),
             ("port", new BInteger(Port)),
             ("save path", new BString(DefaultSavePath)),
+            ("sort column", new BInteger(SortColumn)),
+            ("sort descending", new BInteger(SortDescending ? 1 : 0)),
             ("start with windows", new BInteger(StartWithWindows ? 1 : 0)),
             ("up limit", new BInteger(UploadLimitKb)),
             ("upnp", new BInteger(UseUpnp ? 1 : 0)));

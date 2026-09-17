@@ -12,7 +12,23 @@ internal sealed record TorrentRow(
     Color StatusColour,
     double Down,
     double Up,
-    int Peers);
+    int Peers,
+    DateTimeOffset AddedOn);
+
+/// <summary>Which column the list is ordered by.</summary>
+internal enum TorrentColumn
+{
+    /// <summary>The order they were added, which is what a list starts as.</summary>
+    Added,
+
+    Name,
+    Size,
+    Progress,
+    Status,
+    Down,
+    Up,
+    Peers,
+}
 
 /// <summary>
 /// Every torrent the client is running, one to a row.
@@ -20,6 +36,12 @@ internal sealed record TorrentRow(
 /// The progress bar is the column that does the work: a number tells you a
 /// torrent is at 61%, a bar tells you at a glance which of nine torrents is
 /// nearly there and which has barely started.
+///
+/// Sorting lives here rather than in the window because the rows are rebuilt
+/// twice a second — an order applied by whoever supplies them would be undone
+/// on the next tick. Selection is kept by infohash for the same reason: sorting
+/// by speed reshuffles the list constantly, and a selection held by row number
+/// would wander off every time it did.
 /// </summary>
 internal sealed class TorrentListControl : Control
 {
@@ -27,6 +49,8 @@ internal sealed class TorrentListControl : Control
     private const int HeaderHeight = 26;
 
     private TorrentRow[] _rows = [];
+    private readonly HashSet<InfoHash> _selected = [];
+    private InfoHash? _anchor;
     private int _scroll;
 
     public TorrentListControl()
@@ -41,28 +65,54 @@ internal sealed class TorrentListControl : Control
         BackColor = Theme.Surface;
     }
 
-    /// <summary>The torrent the detail panel below is showing.</summary>
+    /// <summary>The torrent the detail panel below is showing: the last one clicked.</summary>
     public InfoHash? Selected { get; private set; }
+
+    /// <summary>Everything selected, which is what the menu acts on.</summary>
+    public IReadOnlyList<InfoHash> SelectedAll => [.. _rows.Where(row => _selected.Contains(row.InfoHash)).Select(row => row.InfoHash)];
+
+    public TorrentColumn SortColumn { get; private set; } = TorrentColumn.Added;
+
+    public bool SortDescending { get; private set; }
 
     public event Action? SelectionChanged;
 
     /// <summary>Raised on a right-click, with the row under the cursor.</summary>
     public event Action<InfoHash, Point>? RowMenu;
 
+    /// <summary>Raised when the user sorts, so the choice can be remembered.</summary>
+    public event Action? SortChanged;
+
+    public void SetSort(TorrentColumn column, bool descending)
+    {
+        SortColumn = column;
+        SortDescending = descending;
+        Invalidate();
+    }
+
     public void Set(IReadOnlyList<TorrentRow> rows)
     {
-        _rows = [.. rows];
+        _rows = Sorted(rows);
 
-        // A torrent that has gone takes the selection with it, and the first
-        // one that arrives takes it if there was none.
+        // Torrents that have gone take their selection with them, and the first
+        // one to arrive takes it when there was none.
+        _selected.RemoveWhere(hash => !_rows.Any(row => row.InfoHash == hash));
+
         if (Selected is { } selected && !_rows.Any(row => row.InfoHash == selected))
         {
             Selected = _rows.Length > 0 ? _rows[0].InfoHash : null;
+
+            if (Selected is { } replacement)
+            {
+                _selected.Add(replacement);
+            }
+
             SelectionChanged?.Invoke();
         }
         else if (Selected == null && _rows.Length > 0)
         {
             Selected = _rows[0].InfoHash;
+            _selected.Add(_rows[0].InfoHash);
             SelectionChanged?.Invoke();
         }
 
@@ -70,12 +120,47 @@ internal sealed class TorrentListControl : Control
         Invalidate();
     }
 
+    private TorrentRow[] Sorted(IReadOnlyList<TorrentRow> rows)
+    {
+        IOrderedEnumerable<TorrentRow> ordered = SortColumn switch
+        {
+            TorrentColumn.Name => rows.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase),
+            TorrentColumn.Size => rows.OrderBy(row => row.Size),
+            TorrentColumn.Progress => rows.OrderBy(row => row.Fraction),
+            TorrentColumn.Status => rows.OrderBy(row => row.Status, StringComparer.Ordinal),
+            TorrentColumn.Down => rows.OrderBy(row => row.Down),
+            TorrentColumn.Up => rows.OrderBy(row => row.Up),
+            TorrentColumn.Peers => rows.OrderBy(row => row.Peers),
+            _ => rows.OrderBy(row => row.AddedOn),
+        };
+
+        // A stable tiebreak, or rows with equal speeds swap places every time
+        // the list is rebuilt and the whole thing shimmers.
+        ordered = ordered.ThenBy(row => row.AddedOn);
+
+        return SortDescending
+            ? [.. ordered.Reverse()]
+            : [.. ordered];
+    }
+
     private int VisibleRows => Math.Max(1, (Height - HeaderHeight) / RowHeight);
+
+    protected override bool IsInputKey(Keys keyData) => keyData is Keys.Up or Keys.Down || base.IsInputKey(keyData);
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
         Focus();
+
+        if (e.Y < HeaderHeight)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                SortBy(ColumnAt(e.X));
+            }
+
+            return;
+        }
 
         int index = RowAt(e.Y);
         if (index < 0)
@@ -83,17 +168,99 @@ internal sealed class TorrentListControl : Control
             return;
         }
 
-        if (Selected != _rows[index].InfoHash)
+        InfoHash hash = _rows[index].InfoHash;
+
+        if (e.Button == MouseButtons.Right && _selected.Contains(hash))
         {
-            Selected = _rows[index].InfoHash;
-            SelectionChanged?.Invoke();
-            Invalidate();
+            // Right-clicking inside a selection acts on the whole selection
+            // rather than throwing it away, which is what every list does.
+            Selected = hash;
+            RowMenu?.Invoke(hash, e.Location);
+            return;
         }
+
+        Select(index, ModifierKeys);
 
         if (e.Button == MouseButtons.Right)
         {
-            RowMenu?.Invoke(_rows[index].InfoHash, e.Location);
+            RowMenu?.Invoke(hash, e.Location);
         }
+    }
+
+    /// <summary>
+    /// Plain click replaces the selection, control adds to it, shift takes
+    /// everything between the anchor and here.
+    /// </summary>
+    private void Select(int index, Keys modifiers)
+    {
+        InfoHash hash = _rows[index].InfoHash;
+
+        if (modifiers.HasFlag(Keys.Shift) && _anchor is { } anchor)
+        {
+            int from = Array.FindIndex(_rows, row => row.InfoHash == anchor);
+
+            if (from >= 0)
+            {
+                _selected.Clear();
+
+                for (int i = Math.Min(from, index); i <= Math.Max(from, index); i++)
+                {
+                    _selected.Add(_rows[i].InfoHash);
+                }
+            }
+        }
+        else if (modifiers.HasFlag(Keys.Control))
+        {
+            if (!_selected.Add(hash))
+            {
+                _selected.Remove(hash);
+            }
+
+            _anchor = hash;
+        }
+        else
+        {
+            _selected.Clear();
+            _selected.Add(hash);
+            _anchor = hash;
+        }
+
+        Selected = hash;
+        SelectionChanged?.Invoke();
+        Invalidate();
+    }
+
+    public void SelectAll()
+    {
+        _selected.Clear();
+
+        foreach (TorrentRow row in _rows)
+        {
+            _selected.Add(row.InfoHash);
+        }
+
+        SelectionChanged?.Invoke();
+        Invalidate();
+    }
+
+    private void SortBy(TorrentColumn column)
+    {
+        if (SortColumn == column)
+        {
+            SortDescending = !SortDescending;
+        }
+        else
+        {
+            SortColumn = column;
+
+            // Names read best ascending; everything else is a number somebody
+            // clicked on to see the biggest of.
+            SortDescending = column is not (TorrentColumn.Name or TorrentColumn.Added);
+        }
+
+        _rows = Sorted(_rows);
+        SortChanged?.Invoke();
+        Invalidate();
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
@@ -113,6 +280,26 @@ internal sealed class TorrentListControl : Control
 
         int index = _scroll + ((y - HeaderHeight) / RowHeight);
         return index < _rows.Length ? index : -1;
+    }
+
+    private TorrentColumn ColumnAt(int x)
+    {
+        Rectangle[] columns = Columns(0, HeaderHeight);
+        TorrentColumn[] order =
+        [
+            TorrentColumn.Name, TorrentColumn.Size, TorrentColumn.Progress,
+            TorrentColumn.Status, TorrentColumn.Down, TorrentColumn.Up, TorrentColumn.Peers,
+        ];
+
+        for (int i = columns.Length - 1; i >= 0; i--)
+        {
+            if (x >= columns[i].X - 6)
+            {
+                return order[i];
+            }
+        }
+
+        return TorrentColumn.Name;
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -139,7 +326,7 @@ internal sealed class TorrentListControl : Control
         if (_rows.Length == 0)
         {
             using SolidBrush empty = new(Theme.TextMuted);
-            graphics.DrawString("no torrents — add one with the buttons above", Theme.UiFont, empty, 12, HeaderHeight + 10);
+            graphics.DrawString("no torrents — add one from the File menu", Theme.UiFont, empty, 12, HeaderHeight + 10);
             return;
         }
 
@@ -154,14 +341,14 @@ internal sealed class TorrentListControl : Control
         for (int i = _scroll; i < _rows.Length && y < Height; i++)
         {
             TorrentRow row = _rows[i];
-            bool selected = Selected == row.InfoHash;
+            bool selected = _selected.Contains(row.InfoHash);
 
             using (SolidBrush background = new(selected ? Theme.Selection : i % 2 == 1 ? Theme.SurfaceRaised : Theme.Surface))
             {
                 graphics.FillRectangle(background, 0, y, Width, RowHeight);
             }
 
-            if (selected)
+            if (Selected == row.InfoHash)
             {
                 using SolidBrush marker = new(Theme.Accent);
                 graphics.FillRectangle(marker, 0, y, 3, RowHeight);
@@ -249,13 +436,51 @@ internal sealed class TorrentListControl : Control
 
         Rectangle[] columns = Columns(0, HeaderHeight - 1);
 
-        using SolidBrush text = new(Theme.TextMuted);
-        graphics.DrawString(_rows.Length > 0 ? $"{_rows.Length} TORRENTS" : "TORRENTS", Theme.CaptionFont, text, columns[0], left);
-        graphics.DrawString("SIZE", Theme.CaptionFont, text, columns[1], right);
-        graphics.DrawString("PROGRESS", Theme.CaptionFont, text, columns[2], left);
-        graphics.DrawString("STATUS", Theme.CaptionFont, text, columns[3], left);
-        graphics.DrawString("DOWN", Theme.CaptionFont, text, columns[4], right);
-        graphics.DrawString("UP", Theme.CaptionFont, text, columns[5], right);
-        graphics.DrawString("PEERS", Theme.CaptionFont, text, columns[6], right);
+        (string Caption, TorrentColumn Column, StringFormat Format)[] headers =
+        [
+            (_rows.Length > 0 ? $"{_rows.Length} TORRENTS" : "TORRENTS", TorrentColumn.Name, left),
+            ("SIZE", TorrentColumn.Size, right),
+            ("PROGRESS", TorrentColumn.Progress, left),
+            ("STATUS", TorrentColumn.Status, left),
+            ("DOWN", TorrentColumn.Down, right),
+            ("UP", TorrentColumn.Up, right),
+            ("PEERS", TorrentColumn.Peers, right),
+        ];
+
+        for (int i = 0; i < headers.Length; i++)
+        {
+            (string caption, TorrentColumn column, StringFormat format) = headers[i];
+            bool sorted = SortColumn == column;
+
+            using SolidBrush text = new(sorted ? Theme.TextSecondary : Theme.TextMuted);
+            graphics.DrawString(caption, Theme.CaptionFont, text, columns[i], format);
+
+            if (sorted)
+            {
+                DrawArrow(graphics, columns[i], format == right);
+            }
+        }
     }
+
+    /// <summary>
+    /// The little mark saying which way the list is ordered. Drawn beside the
+    /// caption rather than replacing it, so the column still says what it is.
+    /// </summary>
+    private void DrawArrow(Graphics graphics, Rectangle column, bool rightAligned)
+    {
+        int size = 4;
+        int x = rightAligned ? column.X - 2 : column.X + Math.Min(column.Width - 10, TextWidth(column)) + 6;
+        int y = column.Y + (column.Height / 2);
+
+        Point[] arrow = SortDescending
+            ? [new Point(x - size, y - 2), new Point(x + size, y - 2), new Point(x, y + 3)]
+            : [new Point(x - size, y + 2), new Point(x + size, y + 2), new Point(x, y - 3)];
+
+        using SolidBrush brush = new(Theme.Accent);
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        graphics.FillPolygon(brush, arrow);
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
+    }
+
+    private int TextWidth(Rectangle column) => Math.Min(column.Width, 76);
 }
