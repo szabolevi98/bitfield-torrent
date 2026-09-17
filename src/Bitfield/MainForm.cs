@@ -81,6 +81,18 @@ internal sealed class MainForm : Form
         return stream == null ? null : new Icon(stream);
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Native.NativeMethods.UseDarkTitleBar(Handle);
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        Native.NativeMethods.UseDarkTitleBar(Handle);
+    }
+
     private void BuildLayout()
     {
         Panel side = new()
@@ -518,6 +530,9 @@ internal sealed class MainForm : Form
         dialog.Controls.Add(input);
         dialog.Controls.Add(ok);
         dialog.AcceptButton = ok;
+
+        dialog.HandleCreated += (_, _) => Native.NativeMethods.UseDarkTitleBar(dialog.Handle);
+        dialog.Shown += (_, _) => Native.NativeMethods.UseDarkTitleBar(dialog.Handle);
 
         return dialog.ShowDialog(this) == DialogResult.OK && input.Text.Length > 0 ? input.Text : null;
     }

@@ -11,7 +11,7 @@ download proceeds.
 
 ![Bitfield Torrent downloading a Debian ISO](docs/screenshot.png)
 
-A third of the way into the Debian netinst ISO at 17.3 MB/s across 25 peers. The
+A fifth of the way into the Debian netinst ISO at 19.2 MB/s across 16 peers. The
 speckle is what rarest first looks like: pieces arriving from all over the
 torrent rather than in order, with the darker cells the ones in flight.
 
